@@ -15,6 +15,7 @@ import com.notipass.droid.model.ActionType
 import com.notipass.droid.model.LogStatus
 import com.notipass.droid.model.NotificationLog
 import com.notipass.droid.model.TriggerType
+import com.notipass.droid.util.ContactUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,11 +72,21 @@ class NotificationPassService : NotificationListenerService() {
         // Extract Text (Body)
         val text = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
             ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
-            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
             ?: ""
+
+        // Extract SubText (for KakaoTalk group chat, this is the chat room name)
+        val subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString() ?: ""
 
         // Skip completely empty noise notifications
         if (title.isBlank() && text.isBlank()) return
+
+        // Try to resolve contact phone number if title matches a contact name in phonebook
+        val senderPhone = ContactUtil.getPhoneNumberByName(applicationContext, title)
+        val senderDisplay = if (!senderPhone.isNullOrBlank()) {
+            "$title($senderPhone)"
+        } else {
+            title
+        }
 
         val appName = getAppName(pkgName)
         val payload = NotificationPayload(
@@ -83,16 +94,18 @@ class NotificationPassService : NotificationListenerService() {
             appName = appName,
             title = title,
             content = text,
+            subText = subText,
+            senderDisplay = senderDisplay,
             postTime = sbn.postTime
         )
 
         // Process matching rules in background coroutine
         serviceScope.launch {
-            processNotification(payload)
+            processNotification(payload, senderPhone)
         }
     }
 
-    private suspend fun processNotification(payload: NotificationPayload) {
+    private suspend fun processNotification(payload: NotificationPayload, senderPhone: String?) {
         val db = AppDatabase.getDatabase(applicationContext)
         val enabledRules = db.ruleDao().getEnabledRules()
             .filter { it.triggerType == TriggerType.NOTIFICATION }
@@ -112,12 +125,14 @@ class NotificationPassService : NotificationListenerService() {
                     val renderedBody = TemplateEngine.render(
                         template = rule.webhookBodyTemplate,
                         payload = payload,
-                        regexGroups = matchResult.regexGroups
+                        regexGroups = matchResult.regexGroups,
+                        isJson = true
                     )
                     val renderedUrl = TemplateEngine.render(
                         template = rule.webhookUrl,
                         payload = payload,
-                        regexGroups = matchResult.regexGroups
+                        regexGroups = matchResult.regexGroups,
+                        isJson = false
                     )
 
                     val webhookResult = WebhookDispatcher.send(
@@ -136,19 +151,29 @@ class NotificationPassService : NotificationListenerService() {
 
                 // 2. SMS Action
                 if (rule.actionType == ActionType.SMS || rule.actionType == ActionType.BOTH) {
-                    if (rule.smsTargetNumber.isNotBlank()) {
+                    val targetNumber = if (rule.smsTargetNumber.contains("{caller}")) {
+                        senderPhone ?: ""
+                    } else {
+                        rule.smsTargetNumber
+                    }
+
+                    if (targetNumber.isNotBlank()) {
                         val smsText = TemplateEngine.render(
                             template = rule.smsTemplate,
                             payload = payload,
-                            regexGroups = matchResult.regexGroups
+                            regexGroups = matchResult.regexGroups,
+                            isJson = false
                         )
-                        val smsResult = SmsDispatcher.send(applicationContext, rule.smsTargetNumber, smsText)
+                        val smsResult = SmsDispatcher.send(applicationContext, targetNumber, smsText)
                         if (!smsResult.isSuccess) {
                             actionSuccess = false
                             actionError = (actionError?.let { "$it | " } ?: "") + "SMS 실패: ${smsResult.errorMessage}"
                         } else {
-                            responseBody = (responseBody?.let { "$it | " } ?: "") + "SMS 전송 완료"
+                            responseBody = (responseBody?.let { "$it | " } ?: "") + "SMS 전송 완료 ($targetNumber)"
                         }
+                    } else {
+                        actionSuccess = false
+                        actionError = "SMS 수신 대상 번호가 지정되지 않았습니다."
                     }
                 }
 
@@ -158,8 +183,12 @@ class NotificationPassService : NotificationListenerService() {
                     ruleName = rule.name,
                     packageName = payload.packageName,
                     appName = payload.appName,
-                    title = payload.title,
-                    content = payload.content,
+                    title = "알림 감지: ${payload.senderDisplay}",
+                    content = if (rule.actionType != ActionType.WEBHOOK) {
+                        "문자 발송 -> ${rule.smsTargetNumber}: ${payload.content}"
+                    } else {
+                        "웹훅 전송: ${payload.content}"
+                    },
                     timestamp = payload.postTime,
                     status = if (actionSuccess) LogStatus.SUCCESS else LogStatus.FAILED,
                     httpCode = httpCode,

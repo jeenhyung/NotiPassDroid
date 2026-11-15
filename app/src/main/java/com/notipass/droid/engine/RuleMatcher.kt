@@ -8,6 +8,8 @@ data class NotificationPayload(
     val appName: String,
     val title: String,
     val content: String,
+    val subText: String = "",
+    val senderDisplay: String = "",
     val postTime: Long = System.currentTimeMillis()
 )
 

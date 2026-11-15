@@ -12,20 +12,27 @@ object TemplateEngine {
     fun render(
         template: String,
         payload: NotificationPayload,
-        regexGroups: Map<String, String> = emptyMap()
+        regexGroups: Map<String, String> = emptyMap(),
+        isJson: Boolean = false
     ): String {
+        val dateStr = dateFormat.format(Date(payload.postTime))
         val extra = mapOf(
             "title" to payload.title,
+            "sender" to payload.title,
+            "sender_display" to (if (payload.senderDisplay.isNotBlank()) payload.senderDisplay else payload.title),
             "content" to payload.content,
             "text" to payload.content,
+            "message" to payload.content,
+            "room" to payload.subText,
+            "subText" to payload.subText,
             "app" to payload.appName,
             "appName" to payload.appName,
             "package" to payload.packageName,
             "packageName" to payload.packageName,
             "time" to payload.postTime.toString(),
-            "date" to dateFormat.format(Date(payload.postTime))
+            "date" to dateStr
         )
-        return renderWithVariables(template, extra + regexGroups, isJson = true)
+        return renderWithVariables(template, extra + regexGroups, isJson = isJson)
     }
 
     fun renderText(

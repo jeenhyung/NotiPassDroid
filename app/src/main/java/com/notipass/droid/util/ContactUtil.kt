@@ -46,4 +46,33 @@ object ContactUtil {
             null
         }
     }
+
+    fun getPhoneNumberByName(context: Context, name: String): String? {
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) return null
+
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) return null
+
+        return try {
+            val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+            val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            val selection = "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} = ? OR ${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY} = ?"
+            val selectionArgs = arrayOf(cleanName, cleanName)
+
+            context.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val numIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    if (numIndex != -1) cursor.getString(numIndex) else null
+                } else null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to resolve phone number for $cleanName", e)
+            null
+        }
+    }
 }

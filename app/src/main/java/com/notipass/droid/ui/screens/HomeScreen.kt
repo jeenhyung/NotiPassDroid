@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.PhoneCallback
 import androidx.compose.material.icons.filled.*
@@ -74,6 +75,7 @@ fun HomeScreen(
     val recentLogs by db.logDao().getRecentLogs(limit = 5).collectAsState(initial = emptyList())
 
     var showQuickCallSmsDialog by remember { mutableStateOf(false) }
+    var showQuickKakaoSmsDialog by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         isListenerEnabled = PermissionUtil.isNotificationListenerEnabled(context)
@@ -198,12 +200,26 @@ fun HomeScreen(
                             Text("전화/연락처/SMS 권한 허용하기")
                         }
                     } else {
-                        OutlinedButton(
-                            onClick = { showQuickCallSmsDialog = true }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.AddComment, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("전화 수신 자동 문자 규칙 바로 만들기")
+                            OutlinedButton(
+                                onClick = { showQuickCallSmsDialog = true },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.PhoneCallback, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("전화 문자 전달", fontSize = 12.sp)
+                            }
+                            Button(
+                                onClick = { showQuickKakaoSmsDialog = true },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("카톡 문자 전달", fontSize = 12.sp)
+                            }
                         }
                     }
                 }
@@ -404,6 +420,85 @@ fun HomeScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showQuickCallSmsDialog = false }) {
+                    Text("취소")
+                }
+            }
+        )
+    }
+
+    // Quick KakaoTalk SMS Setup Dialog
+    if (showQuickKakaoSmsDialog) {
+        var kakaoTargetNumber by remember { mutableStateOf("") }
+        var kakaoSmsTemplate by remember {
+            mutableStateOf("[카톡] {sender_display}: {content} ({time})")
+        }
+
+        AlertDialog(
+            onDismissRequest = { showQuickKakaoSmsDialog = false },
+            title = { Text("카카오톡 수신 문자 전달 규칙 생성") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "카카오톡 메시지를 받았을 때 발신자 이름과 내용을 등록된 번호로 자동 전달합니다. 연락처에 등록된 사람이면 전화번호도 함께 표기됩니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+
+                    OutlinedTextField(
+                        value = kakaoTargetNumber,
+                        onValueChange = { kakaoTargetNumber = it },
+                        label = { Text("알림 받을 전화번호") },
+                        placeholder = { Text("예: 01012345678 (내 다른 폰 번호)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = kakaoSmsTemplate,
+                        onValueChange = { kakaoSmsTemplate = it },
+                        label = { Text("전송할 문자 내용") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4
+                    )
+
+                    Text(
+                        text = "치환 토큰: {sender_display}(발신자+번호), {room}(단톡방), {content}(내용), {time}(시각)",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (kakaoTargetNumber.isBlank()) {
+                            Toast.makeText(context, "전화번호를 입력해주세요.", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        coroutineScope.launch {
+                            val newRule = Rule(
+                                name = "카카오톡 수신 문자 전달",
+                                isEnabled = true,
+                                triggerType = TriggerType.NOTIFICATION,
+                                targetPackage = "com.kakao.talk",
+                                targetAppName = "카카오톡",
+                                actionType = ActionType.SMS,
+                                smsTargetNumber = kakaoTargetNumber.trim(),
+                                smsTemplate = kakaoSmsTemplate
+                            )
+                            db.ruleDao().insertRule(newRule)
+                            showQuickKakaoSmsDialog = false
+                            Toast.makeText(context, "카톡 문자 전달 규칙이 등록되었습니다!", Toast.LENGTH_SHORT).show()
+                            onNavigateToRules()
+                        }
+                    }
+                ) {
+                    Text("규칙 추가")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuickKakaoSmsDialog = false }) {
                     Text("취소")
                 }
             }
