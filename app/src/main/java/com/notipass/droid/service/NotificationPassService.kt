@@ -8,10 +8,13 @@ import android.util.Log
 import com.notipass.droid.data.db.AppDatabase
 import com.notipass.droid.engine.NotificationPayload
 import com.notipass.droid.engine.RuleMatcher
+import com.notipass.droid.engine.SmsDispatcher
 import com.notipass.droid.engine.TemplateEngine
 import com.notipass.droid.engine.WebhookDispatcher
+import com.notipass.droid.model.ActionType
 import com.notipass.droid.model.LogStatus
 import com.notipass.droid.model.NotificationLog
+import com.notipass.droid.model.TriggerType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -92,31 +95,62 @@ class NotificationPassService : NotificationListenerService() {
     private suspend fun processNotification(payload: NotificationPayload) {
         val db = AppDatabase.getDatabase(applicationContext)
         val enabledRules = db.ruleDao().getEnabledRules()
+            .filter { it.triggerType == TriggerType.NOTIFICATION }
 
         if (enabledRules.isEmpty()) return
 
         for (rule in enabledRules) {
             val matchResult = RuleMatcher.match(rule, payload)
             if (matchResult.isMatched) {
-                // Render templates
-                val renderedBody = TemplateEngine.render(
-                    template = rule.webhookBodyTemplate,
-                    payload = payload,
-                    regexGroups = matchResult.regexGroups
-                )
-                val renderedUrl = TemplateEngine.render(
-                    template = rule.webhookUrl,
-                    payload = payload,
-                    regexGroups = matchResult.regexGroups
-                )
+                var actionSuccess = true
+                var actionError: String? = null
+                var responseBody: String? = null
+                var httpCode: Int? = null
 
-                // Dispatch Webhook
-                val webhookResult = WebhookDispatcher.send(
-                    url = renderedUrl,
-                    method = rule.webhookMethod,
-                    headersJson = rule.webhookHeadersJson,
-                    bodyContent = renderedBody
-                )
+                // 1. Webhook Action
+                if (rule.actionType == ActionType.WEBHOOK || rule.actionType == ActionType.BOTH) {
+                    val renderedBody = TemplateEngine.render(
+                        template = rule.webhookBodyTemplate,
+                        payload = payload,
+                        regexGroups = matchResult.regexGroups
+                    )
+                    val renderedUrl = TemplateEngine.render(
+                        template = rule.webhookUrl,
+                        payload = payload,
+                        regexGroups = matchResult.regexGroups
+                    )
+
+                    val webhookResult = WebhookDispatcher.send(
+                        url = renderedUrl,
+                        method = rule.webhookMethod,
+                        headersJson = rule.webhookHeadersJson,
+                        bodyContent = renderedBody
+                    )
+                    httpCode = webhookResult.statusCode
+                    responseBody = webhookResult.responseBody
+                    if (!webhookResult.isSuccess) {
+                        actionSuccess = false
+                        actionError = "웹훅 실패: ${webhookResult.errorMessage}"
+                    }
+                }
+
+                // 2. SMS Action
+                if (rule.actionType == ActionType.SMS || rule.actionType == ActionType.BOTH) {
+                    if (rule.smsTargetNumber.isNotBlank()) {
+                        val smsText = TemplateEngine.render(
+                            template = rule.smsTemplate,
+                            payload = payload,
+                            regexGroups = matchResult.regexGroups
+                        )
+                        val smsResult = SmsDispatcher.send(applicationContext, rule.smsTargetNumber, smsText)
+                        if (!smsResult.isSuccess) {
+                            actionSuccess = false
+                            actionError = (actionError?.let { "$it | " } ?: "") + "SMS 실패: ${smsResult.errorMessage}"
+                        } else {
+                            responseBody = (responseBody?.let { "$it | " } ?: "") + "SMS 전송 완료"
+                        }
+                    }
+                }
 
                 // Record Log
                 val logEntry = NotificationLog(
@@ -127,10 +161,10 @@ class NotificationPassService : NotificationListenerService() {
                     title = payload.title,
                     content = payload.content,
                     timestamp = payload.postTime,
-                    status = if (webhookResult.isSuccess) LogStatus.SUCCESS else LogStatus.FAILED,
-                    httpCode = webhookResult.statusCode,
-                    responseBody = webhookResult.responseBody,
-                    errorMessage = webhookResult.errorMessage
+                    status = if (actionSuccess) LogStatus.SUCCESS else LogStatus.FAILED,
+                    httpCode = httpCode,
+                    responseBody = responseBody,
+                    errorMessage = actionError
                 )
                 db.logDao().insertLog(logEntry)
             }

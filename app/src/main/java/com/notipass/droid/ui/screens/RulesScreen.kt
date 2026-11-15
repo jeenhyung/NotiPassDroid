@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,7 +17,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.notipass.droid.data.db.AppDatabase
+import com.notipass.droid.model.ActionType
 import com.notipass.droid.model.Rule
+import com.notipass.droid.model.TriggerType
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -53,7 +56,7 @@ fun RulesScreen(
                     modifier = Modifier.padding(24.dp)
                 ) {
                     Icon(
-                        Icons.Default.Rule,
+                        Icons.AutoMirrored.Filled.Rule,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.outline
@@ -66,7 +69,7 @@ fun RulesScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "우측 하단 '+' 버튼을 눌러 새 알림 전달 규칙을 추가해보세요.",
+                        text = "우측 하단 '+' 버튼을 눌러 알림/통화 자동화 규칙을 추가해보세요.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -154,11 +157,39 @@ fun RuleItemCard(
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (!rule.targetAppName.isNullOrBlank()) rule.targetAppName else (rule.targetPackage ?: "모든 앱"),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // Trigger Chip
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = when (rule.triggerType) {
+                                    TriggerType.NOTIFICATION -> "🔔 " + (rule.targetAppName ?: rule.targetPackage ?: "모든 앱 알림")
+                                    TriggerType.INCOMING_CALL -> "📞 전화 수신"
+                                    TriggerType.MISSED_CALL -> "📵 부재중 전화"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+
+                        // Action Chip
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Text(
+                                text = when (rule.actionType) {
+                                    ActionType.WEBHOOK -> "🌐 웹훅"
+                                    ActionType.SMS -> "💬 문자(SMS)"
+                                    ActionType.BOTH -> "🌐 웹훅 + 💬 문자"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
                 Switch(
                     checked = rule.isEnabled,
@@ -167,22 +198,21 @@ fun RuleItemCard(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Webhook details snippet
+            // Details snippet
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(rule.webhookMethod) },
-                    modifier = Modifier.height(28.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
+                val detailText = when (rule.actionType) {
+                    ActionType.WEBHOOK -> rule.webhookUrl.ifBlank { "웹훅 URL 미설정" }
+                    ActionType.SMS -> "수신처: " + if (rule.smsTargetNumber.isBlank() || rule.smsTargetNumber.contains("{caller}")) "전화 건 사람(회신)" else rule.smsTargetNumber
+                    ActionType.BOTH -> "${rule.smsTargetNumber} & ${rule.webhookUrl}"
+                }
                 Text(
-                    text = rule.webhookUrl.ifBlank { "URL 미설정" },
+                    text = detailText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                     maxLines = 1,

@@ -14,36 +14,48 @@ object TemplateEngine {
         payload: NotificationPayload,
         regexGroups: Map<String, String> = emptyMap()
     ): String {
+        val extra = mapOf(
+            "title" to payload.title,
+            "content" to payload.content,
+            "text" to payload.content,
+            "app" to payload.appName,
+            "appName" to payload.appName,
+            "package" to payload.packageName,
+            "packageName" to payload.packageName,
+            "time" to payload.postTime.toString(),
+            "date" to dateFormat.format(Date(payload.postTime))
+        )
+        return renderWithVariables(template, extra + regexGroups, isJson = true)
+    }
+
+    fun renderText(
+        template: String,
+        variables: Map<String, String>,
+        isJson: Boolean = false
+    ): String {
+        val dateStr = dateFormat.format(Date())
+        val baseVars = mapOf(
+            "date" to dateStr,
+            "time" to System.currentTimeMillis().toString()
+        )
+        return renderWithVariables(template, baseVars + variables, isJson)
+    }
+
+    private fun renderWithVariables(
+        template: String,
+        variables: Map<String, String>,
+        isJson: Boolean
+    ): String {
         var result = template
-
-        val safeTitle = escapeJson(payload.title)
-        val safeContent = escapeJson(payload.content)
-        val safeApp = escapeJson(payload.appName)
-        val safePackage = escapeJson(payload.packageName)
-        val dateStr = dateFormat.format(Date(payload.postTime))
-
-        // Replace standard placeholders
-        result = result.replace("{title}", safeTitle)
-            .replace("{content}", safeContent)
-            .replace("{text}", safeContent)
-            .replace("{app}", safeApp)
-            .replace("{appName}", safeApp)
-            .replace("{package}", safePackage)
-            .replace("{packageName}", safePackage)
-            .replace("{time}", payload.postTime.toString())
-            .replace("{date}", dateStr)
-
-        // Replace regex groups
-        for ((key, value) in regexGroups) {
-            result = result.replace("{$key}", escapeJson(value))
+        for ((key, value) in variables) {
+            val safeVal = if (isJson) escapeJson(value) else value
+            result = result.replace("{$key}", safeVal)
         }
-
         return result
     }
 
     private fun escapeJson(input: String): String {
         return JSONObject.quote(input).let {
-            // Remove surrounding double quotes added by JSONObject.quote
             if (it.length >= 2 && it.startsWith("\"") && it.endsWith("\"")) {
                 it.substring(1, it.length - 1)
             } else {

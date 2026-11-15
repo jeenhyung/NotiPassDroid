@@ -1,6 +1,8 @@
 package com.notipass.droid.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -8,6 +10,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.PhoneCallback
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,8 +24,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.notipass.droid.data.db.AppDatabase
+import com.notipass.droid.model.ActionType
 import com.notipass.droid.model.LogStatus
 import com.notipass.droid.model.NotificationLog
+import com.notipass.droid.model.Rule
+import com.notipass.droid.model.TriggerType
 import com.notipass.droid.service.NotificationPassService
 import com.notipass.droid.ui.theme.StatusError
 import com.notipass.droid.ui.theme.StatusSuccess
@@ -46,17 +53,32 @@ fun HomeScreen(
     var isBatteryOptIgnored by remember {
         mutableStateOf(PermissionUtil.isIgnoringBatteryOptimizations(context))
     }
-    val isServiceConnected by NotificationPassService.isServiceConnected.collectAsState()
+    var hasPhoneSmsPerms by remember {
+        mutableStateOf(PermissionUtil.hasPhoneAndSmsPermissions(context))
+    }
+
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        hasPhoneSmsPerms = results.values.all { it }
+        if (hasPhoneSmsPerms) {
+            Toast.makeText(context, "전화 및 SMS 권한이 허용되었습니다.", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "일부 권한이 거부되었습니다.", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val totalCount by db.logDao().getTotalCount().collectAsState(initial = 0)
     val successCount by db.logDao().getSuccessCount().collectAsState(initial = 0)
     val failedCount by db.logDao().getFailedCount().collectAsState(initial = 0)
     val recentLogs by db.logDao().getRecentLogs(limit = 5).collectAsState(initial = emptyList())
 
-    // Refresh permission status on resume
+    var showQuickCallSmsDialog by remember { mutableStateOf(false) }
+
     DisposableEffect(Unit) {
         isListenerEnabled = PermissionUtil.isNotificationListenerEnabled(context)
         isBatteryOptIgnored = PermissionUtil.isIgnoringBatteryOptimizations(context)
+        hasPhoneSmsPerms = PermissionUtil.hasPhoneAndSmsPermissions(context)
         onDispose { }
     }
 
@@ -100,7 +122,7 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = if (isListenerEnabled) {
-                            "기기의 알림을 감지하여 등록된 웹훅 및 자동화 규칙을 수행합니다."
+                            "기기의 알림 및 통화를 감지하여 등록된 웹훅 및 자동 문자 규칙을 수행합니다."
                         } else {
                             "알림을 가로채고 전달하려면 [알림 접근 권한]이 활성화되어 있어야 합니다."
                         },
@@ -110,9 +132,7 @@ fun HomeScreen(
                     if (!isListenerEnabled) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
-                            onClick = {
-                                PermissionUtil.openNotificationListenerSettings(context)
-                            },
+                            onClick = { PermissionUtil.openNotificationListenerSettings(context) },
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                         ) {
                             Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -124,9 +144,7 @@ fun HomeScreen(
                     if (!isBatteryOptIgnored) {
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
-                            onClick = {
-                                PermissionUtil.requestIgnoreBatteryOptimizations(context)
-                            }
+                            onClick = { PermissionUtil.requestIgnoreBatteryOptimizations(context) }
                         ) {
                             Icon(Icons.Default.BatteryAlert, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
@@ -137,7 +155,62 @@ fun HomeScreen(
             }
         }
 
-        // 2. Statistics Grid
+        // 2. Call & SMS Permission Banner
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (hasPhoneSmsPerms) MaterialTheme.colorScheme.surfaceVariant else Color(0xFFFFF3E0)
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.PhoneCallback,
+                            contentDescription = null,
+                            tint = if (hasPhoneSmsPerms) MaterialTheme.colorScheme.primary else Color(0xFFE65100)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (hasPhoneSmsPerms) "전화 수신 및 문자 발송 활성화됨" else "전화 수신 감지 & 문자 권한 필요",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "전화가 왔을 때 번호를 감지하고 등록된 번호로 안내 문자를 자동 발송하려면 전화 상태/통화 기록/SMS 발송 권한이 필요합니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (!hasPhoneSmsPerms) {
+                        Button(
+                            onClick = {
+                                permLauncher.launch(PermissionUtil.REQUIRED_PHONE_PERMISSIONS)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
+                        ) {
+                            Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("전화 및 SMS 권한 허용하기")
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { showQuickCallSmsDialog = true }
+                        ) {
+                            Icon(Icons.Default.AddComment, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("전화 수신 자동 문자 규칙 바로 만들기")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Statistics Grid
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -166,7 +239,7 @@ fun HomeScreen(
             }
         }
 
-        // 3. Quick Actions
+        // 4. Quick Actions
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -195,7 +268,7 @@ fun HomeScreen(
                             onClick = onNavigateToLogs,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("로그 전체보기")
                         }
@@ -204,7 +277,7 @@ fun HomeScreen(
             }
         }
 
-        // 4. Recent Logs Preview
+        // 5. Recent Logs Preview
         item {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -230,7 +303,7 @@ fun HomeScreen(
                 ) {
                     Box(modifier = Modifier.padding(24.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Text(
-                            text = "아직 감지된 알림이 없습니다.",
+                            text = "아직 감지된 알림이나 통화가 없습니다.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -242,6 +315,99 @@ fun HomeScreen(
                 LogPreviewItem(log)
             }
         }
+    }
+
+    // Quick Call SMS Setup Dialog
+    if (showQuickCallSmsDialog) {
+        var quickTargetNumber by remember { mutableStateOf("") }
+        var quickSmsTemplate by remember {
+            mutableStateOf("[NotiPass] {caller} 번호로 전화가 수신되었습니다. ({date})")
+        }
+        var sendToCallerOnly by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showQuickCallSmsDialog = false },
+            title = { Text("전화 수신 자동 문자 규칙 생성") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "전화가 올 때 자동으로 SMS를 전송할 대상 번호와 내용을 설정하세요.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = sendToCallerOnly,
+                            onCheckedChange = {
+                                sendToCallerOnly = it
+                                if (it) {
+                                    quickSmsTemplate = "[자동응답] 현재 통화가 어렵습니다. 용건을 문자로 남겨주시면 확인 후 연락드리겠습니다."
+                                } else {
+                                    quickSmsTemplate = "[NotiPass] {caller} 번호로 전화가 수신되었습니다. ({date})"
+                                }
+                            }
+                        )
+                        Text(
+                            text = "전화 건 사람(발신자)에게 자동 회신 문자",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+
+                    if (!sendToCallerOnly) {
+                        OutlinedTextField(
+                            value = quickTargetNumber,
+                            onValueChange = { quickTargetNumber = it },
+                            label = { Text("알림 받을 전화번호") },
+                            placeholder = { Text("예: 01012345678 (내 다른 폰 번호)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = quickSmsTemplate,
+                        onValueChange = { quickSmsTemplate = it },
+                        label = { Text("전송할 문자 내용") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val finalTarget = if (sendToCallerOnly) "{caller}" else quickTargetNumber.trim()
+                        if (finalTarget.isBlank()) {
+                            Toast.makeText(context, "전화번호를 입력해주세요.", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        coroutineScope.launch {
+                            val newRule = Rule(
+                                name = if (sendToCallerOnly) "발신자 통화 부재 자동응답" else "전화 수신 알림 문자 전달",
+                                isEnabled = true,
+                                triggerType = TriggerType.INCOMING_CALL,
+                                actionType = ActionType.SMS,
+                                smsTargetNumber = finalTarget,
+                                smsTemplate = quickSmsTemplate
+                            )
+                            db.ruleDao().insertRule(newRule)
+                            showQuickCallSmsDialog = false
+                            Toast.makeText(context, "통화 자동 문자 규칙이 등록되었습니다!", Toast.LENGTH_SHORT).show()
+                            onNavigateToRules()
+                        }
+                    }
+                ) {
+                    Text("규칙 추가")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuickCallSmsDialog = false }) {
+                    Text("취소")
+                }
+            }
+        )
     }
 }
 
@@ -313,7 +479,7 @@ fun LogPreviewItem(log: NotificationLog) {
                     )
                 }
                 Text(
-                    text = log.content.ifBlank { "(본문 없음)" },
+                    text = log.content.ifBlank { "(내용 없음)" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                     maxLines = 1

@@ -8,7 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
@@ -20,10 +20,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.notipass.droid.data.db.AppDatabase
 import com.notipass.droid.engine.NotificationPayload
+import com.notipass.droid.engine.SmsDispatcher
 import com.notipass.droid.engine.TemplateEngine
 import com.notipass.droid.engine.WebhookDispatcher
+import com.notipass.droid.model.ActionType
 import com.notipass.droid.model.MatchMode
 import com.notipass.droid.model.Rule
+import com.notipass.droid.model.TriggerType
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,16 +40,21 @@ fun RuleEditScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var name by remember { mutableStateOf("") }
-    var targetPackage by remember { mutableStateOf<String?>(null) }
-    var targetAppName by remember { mutableStateOf<String?>(null) }
     var isEnabled by remember { mutableStateOf(true) }
 
+    // Trigger States
+    var triggerType by remember { mutableStateOf(TriggerType.NOTIFICATION) }
+    var targetPackage by remember { mutableStateOf<String?>(null) }
+    var targetAppName by remember { mutableStateOf<String?>(null) }
     var titleMode by remember { mutableStateOf(MatchMode.IGNORE) }
     var titleKeyword by remember { mutableStateOf("") }
-
     var contentMode by remember { mutableStateOf(MatchMode.IGNORE) }
     var contentKeyword by remember { mutableStateOf("") }
 
+    // Action States
+    var actionType by remember { mutableStateOf(ActionType.WEBHOOK) }
+
+    // Webhook Settings
     var webhookUrl by remember { mutableStateOf("") }
     var webhookMethod by remember { mutableStateOf("POST") }
     var headersJson by remember { mutableStateOf("{}") }
@@ -54,8 +62,14 @@ fun RuleEditScreen(
         mutableStateOf("""{"title":"{title}","content":"{content}","app":"{app}","time":"{time}"}""")
     }
 
+    // SMS Settings
+    var smsTargetNumber by remember { mutableStateOf("") }
+    var smsTemplate by remember {
+        mutableStateOf("[NotiPass] {caller} 번호로 전화가 수신되었습니다. ({date})")
+    }
+
     var showAppPicker by remember { mutableStateOf(false) }
-    var isTestingWebhook by remember { mutableStateOf(false) }
+    var isTestingAction by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
 
     // Load existing rule if ruleId > 0
@@ -64,17 +78,21 @@ fun RuleEditScreen(
             val rule = db.ruleDao().getRuleById(ruleId)
             if (rule != null) {
                 name = rule.name
+                isEnabled = rule.isEnabled
+                triggerType = rule.triggerType
                 targetPackage = rule.targetPackage
                 targetAppName = rule.targetAppName
-                isEnabled = rule.isEnabled
                 titleMode = rule.titleMatchMode
                 titleKeyword = rule.titleKeyword
                 contentMode = rule.contentMatchMode
                 contentKeyword = rule.contentKeyword
+                actionType = rule.actionType
                 webhookUrl = rule.webhookUrl
                 webhookMethod = rule.webhookMethod
                 headersJson = rule.webhookHeadersJson
                 bodyTemplate = rule.webhookBodyTemplate
+                smsTargetNumber = rule.smsTargetNumber
+                smsTemplate = rule.smsTemplate
             }
         }
     }
@@ -85,7 +103,7 @@ fun RuleEditScreen(
                 title = { Text(if (ruleId > 0) "규칙 수정" else "새 규칙 추가") },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "뒤로")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로")
                     }
                 },
                 actions = {
@@ -95,8 +113,12 @@ fun RuleEditScreen(
                                 Toast.makeText(context, "규칙 이름을 입력해주세요.", Toast.LENGTH_SHORT).show()
                                 return@IconButton
                             }
-                            if (webhookUrl.isBlank()) {
+                            if (actionType != ActionType.SMS && webhookUrl.isBlank()) {
                                 Toast.makeText(context, "웹훅 URL을 입력해주세요.", Toast.LENGTH_SHORT).show()
+                                return@IconButton
+                            }
+                            if (actionType != ActionType.WEBHOOK && smsTargetNumber.isBlank()) {
+                                Toast.makeText(context, "문자 수신 번호를 입력해주세요 (회신은 {caller}).", Toast.LENGTH_SHORT).show()
                                 return@IconButton
                             }
 
@@ -105,16 +127,20 @@ fun RuleEditScreen(
                                     id = if (ruleId > 0) ruleId else 0,
                                     name = name.trim(),
                                     isEnabled = isEnabled,
+                                    triggerType = triggerType,
                                     targetPackage = targetPackage,
                                     targetAppName = targetAppName,
                                     titleMatchMode = titleMode,
                                     titleKeyword = titleKeyword.trim(),
                                     contentMatchMode = contentMode,
                                     contentKeyword = contentKeyword.trim(),
+                                    actionType = actionType,
                                     webhookUrl = webhookUrl.trim(),
                                     webhookMethod = webhookMethod,
                                     webhookHeadersJson = headersJson.trim(),
-                                    webhookBodyTemplate = bodyTemplate
+                                    webhookBodyTemplate = bodyTemplate,
+                                    smsTargetNumber = smsTargetNumber.trim(),
+                                    smsTemplate = smsTemplate
                                 )
                                 if (ruleId > 0) {
                                     db.ruleDao().updateRule(rule)
@@ -140,236 +166,283 @@ fun RuleEditScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Basic Info
+            // 1. Rule Name
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
                 label = { Text("규칙 이름") },
-                placeholder = { Text("예: 카카오톡 결제 알림 전달") },
+                placeholder = { Text("예: 전화 수신 시 등록 번호로 문자 전송") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
 
-            // Target App Selector
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showAppPicker = true },
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text(text = "대상 앱 필터", style = MaterialTheme.typography.labelMedium)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (!targetAppName.isNullOrBlank()) targetAppName!! else (targetPackage ?: "모든 앱 (필터 없음)"),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    TextButton(onClick = { showAppPicker = true }) {
-                        Text("변경")
-                    }
-                }
-            }
-
-            // 2. Title Filter Card
+            // 2. Trigger Type Selection
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "알림 제목 필터", fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(text = "1. 언제 실행할까요? (발동 조건)", fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MatchMode.values().forEach { mode ->
-                            FilterChip(
-                                selected = titleMode == mode,
-                                onClick = { titleMode = mode },
-                                label = {
-                                    Text(
-                                        when (mode) {
-                                            MatchMode.IGNORE -> "무시 (전부)"
-                                            MatchMode.CONTAINS -> "포함"
-                                            MatchMode.EXACT -> "일치"
-                                            MatchMode.REGEX -> "정규식"
-                                        }
-                                    )
-                                }
-                            )
-                        }
-                    }
-
-                    if (titleMode != MatchMode.IGNORE) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = titleKeyword,
-                            onValueChange = { titleKeyword = it },
-                            label = { Text(if (titleMode == MatchMode.REGEX) "정규표현식" else "검색 키워드") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            }
-
-            // 3. Content Filter Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "알림 내용(본문) 필터", fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MatchMode.values().forEach { mode ->
-                            FilterChip(
-                                selected = contentMode == mode,
-                                onClick = { contentMode = mode },
-                                label = {
-                                    Text(
-                                        when (mode) {
-                                            MatchMode.IGNORE -> "무시 (전부)"
-                                            MatchMode.CONTAINS -> "포함"
-                                            MatchMode.EXACT -> "일치"
-                                            MatchMode.REGEX -> "정규식"
-                                        }
-                                    )
-                                }
-                            )
-                        }
-                    }
-
-                    if (contentMode != MatchMode.IGNORE) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = contentKeyword,
-                            onValueChange = { contentKeyword = it },
-                            label = { Text(if (contentMode == MatchMode.REGEX) "정규표현식" else "검색 키워드") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            }
-
-            // 4. Webhook Action Configuration
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "웹훅 (Webhook) 전송 설정", fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Method Chips (POST / GET)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("POST", "GET").forEach { method ->
-                            FilterChip(
-                                selected = webhookMethod == method,
-                                onClick = { webhookMethod = method },
-                                label = { Text(method) }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = webhookUrl,
-                        onValueChange = { webhookUrl = it },
-                        label = { Text("Webhook URL") },
-                        placeholder = { Text("https://discord.com/api/webhooks/... or https://your-server.com") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(text = "동적 치환 토큰 (클릭 시 템플릿에 삽입):", style = MaterialTheme.typography.bodySmall)
-                    Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf("{title}", "{content}", "{app}", "{package}", "{time}", "{date}").forEach { token ->
-                            AssistChip(
-                                onClick = {
-                                    bodyTemplate += token
-                                },
-                                label = { Text(token) }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = bodyTemplate,
-                        onValueChange = { bodyTemplate = it },
-                        label = { Text("HTTP Body (JSON Template)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3,
-                        maxLines = 8
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = {
-                            if (webhookUrl.isBlank()) {
-                                Toast.makeText(context, "URL을 먼저 입력해주세요.", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-                            isTestingWebhook = true
-                            testResult = null
-                            coroutineScope.launch {
-                                val mockPayload = NotificationPayload(
-                                    packageName = targetPackage ?: "com.kakao.talk",
-                                    appName = targetAppName ?: "카카오톡",
-                                    title = "홍길동",
-                                    content = "안녕하세요! NotiPass 테스트 메시지입니다."
-                                )
-                                val renderedBody = TemplateEngine.render(bodyTemplate, mockPayload)
-                                val renderedUrl = TemplateEngine.render(webhookUrl, mockPayload)
-                                val result = WebhookDispatcher.send(
-                                    url = renderedUrl,
-                                    method = webhookMethod,
-                                    headersJson = headersJson,
-                                    bodyContent = renderedBody
-                                )
-                                isTestingWebhook = false
-                                testResult = if (result.isSuccess) {
-                                    "전송 성공! (HTTP ${result.statusCode})\n${result.responseBody ?: ""}"
-                                } else {
-                                    "전송 실패: ${result.errorMessage}"
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (isTestingWebhook) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary)
-                        } else {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("웹훅 테스트 전송")
-                        }
-                    }
-
-                    if (testResult != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = testResult!!,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (testResult!!.startsWith("전송 성공")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        FilterChip(
+                            selected = triggerType == TriggerType.NOTIFICATION,
+                            onClick = { triggerType = TriggerType.NOTIFICATION },
+                            label = { Text("🔔 앱 알림 수신") }
+                        )
+                        FilterChip(
+                            selected = triggerType == TriggerType.INCOMING_CALL,
+                            onClick = { triggerType = TriggerType.INCOMING_CALL },
+                            label = { Text("📞 전화 올 때 (벨 울림)") }
+                        )
+                        FilterChip(
+                            selected = triggerType == TriggerType.MISSED_CALL,
+                            onClick = { triggerType = TriggerType.MISSED_CALL },
+                            label = { Text("📵 부재중 전화") }
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (triggerType == TriggerType.NOTIFICATION) {
+                        // Target App Selector
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showAppPicker = true },
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column {
+                                    Text(text = "대상 앱", style = MaterialTheme.typography.labelSmall)
+                                    Text(
+                                        text = if (!targetAppName.isNullOrBlank()) targetAppName!! else (targetPackage ?: "모든 앱 (필터 없음)"),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                TextButton(onClick = { showAppPicker = true }) {
+                                    Text("앱 선택")
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = titleKeyword,
+                            onValueChange = { titleKeyword = it },
+                            label = { Text("알림 제목 포함 키워드 (선택)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = contentKeyword,
+                            onValueChange = { contentKeyword = it },
+                            label = { Text("알림 본문 포함 키워드 (선택)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        // Phone Call trigger settings
+                        OutlinedTextField(
+                            value = titleKeyword,
+                            onValueChange = { titleKeyword = it },
+                            label = { Text("발신자 번호 필터 (비워두면 모든 전화)") },
+                            placeholder = { Text("예: 010 (특정 국번만) 또는 비워두기") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
+            // 3. Action Type Selection
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(text = "2. 어떤 작업을 수행할까요? (동작)", fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = actionType == ActionType.SMS,
+                            onClick = { actionType = ActionType.SMS },
+                            label = { Text("💬 문자(SMS) 발송") }
+                        )
+                        FilterChip(
+                            selected = actionType == ActionType.WEBHOOK,
+                            onClick = { actionType = ActionType.WEBHOOK },
+                            label = { Text("🌐 웹훅 전송") }
+                        )
+                        FilterChip(
+                            selected = actionType == ActionType.BOTH,
+                            onClick = { actionType = ActionType.BOTH },
+                            label = { Text("⚡ 둘 다") }
+                        )
+                    }
+                }
+            }
+
+            // 4. SMS Configuration Section
+            if (actionType == ActionType.SMS || actionType == ActionType.BOTH) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(text = "💬 문자(SMS) 자동 발송 설정", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = smsTargetNumber,
+                            onValueChange = { smsTargetNumber = it },
+                            label = { Text("문자 받을 대상 번호") },
+                            placeholder = { Text("예: 01012345678 (또는 {caller} 입력 시 발신자에게 회신)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AssistChip(
+                                onClick = { smsTargetNumber = "{caller}" },
+                                label = { Text("전화 건 사람({caller})에게 회신") }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(text = "메시지 템플릿 치환 토큰:", style = MaterialTheme.typography.bodySmall)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("{caller}", "{date}", "{time}", "{content}").forEach { token ->
+                                AssistChip(
+                                    onClick = { smsTemplate += token },
+                                    label = { Text(token) }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = smsTemplate,
+                            onValueChange = { smsTemplate = it },
+                            label = { Text("전송할 문자 내용") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                            maxLines = 6
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                if (smsTargetNumber.isBlank()) {
+                                    Toast.makeText(context, "수신 번호를 입력해주세요.", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                isTestingAction = true
+                                testResult = null
+                                coroutineScope.launch {
+                                    val testVars = mapOf(
+                                        "caller" to "010-1234-5678",
+                                        "number" to "010-1234-5678",
+                                        "phone" to "010-1234-5678",
+                                        "content" to "테스트 수신 내용"
+                                    )
+                                    val target = if (smsTargetNumber.contains("{caller}")) "01012345678" else smsTargetNumber
+                                    val rendered = TemplateEngine.renderText(smsTemplate, testVars, isJson = false)
+                                    val res = SmsDispatcher.send(context, target, rendered)
+                                    isTestingAction = false
+                                    testResult = if (res.isSuccess) {
+                                        "SMS 발송 성공! ($target -> $rendered)"
+                                    } else {
+                                        "SMS 발송 실패: ${res.errorMessage}"
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("SMS 발송 테스트")
+                        }
+                    }
+                }
+            }
+
+            // 5. Webhook Configuration Section
+            if (actionType == ActionType.WEBHOOK || actionType == ActionType.BOTH) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(text = "🌐 웹훅 (Webhook) 설정", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("POST", "GET").forEach { method ->
+                                FilterChip(
+                                    selected = webhookMethod == method,
+                                    onClick = { webhookMethod = method },
+                                    label = { Text(method) }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = webhookUrl,
+                            onValueChange = { webhookUrl = it },
+                            label = { Text("Webhook URL") },
+                            placeholder = { Text("https://discord.com/api/webhooks/... or https://your-server.com") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = bodyTemplate,
+                            onValueChange = { bodyTemplate = it },
+                            label = { Text("HTTP Body (JSON Template)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                            maxLines = 6
+                        )
+                    }
+                }
+            }
+
+            if (testResult != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (testResult!!.startsWith("SMS 발송 성공")) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Text(
+                        text = testResult!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(14.dp)
+                    )
                 }
             }
         }

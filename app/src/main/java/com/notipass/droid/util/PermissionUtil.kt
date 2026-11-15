@@ -1,13 +1,22 @@
 package com.notipass.droid.util
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 
 object PermissionUtil {
+
+    val REQUIRED_PHONE_PERMISSIONS = arrayOf(
+        Manifest.permission.READ_PHONE_STATE,
+        Manifest.permission.READ_CALL_LOG,
+        Manifest.permission.SEND_SMS
+    )
 
     fun isNotificationListenerEnabled(context: Context): Boolean {
         val packageNames = NotificationManagerCompat.getEnabledListenerPackages(context)
@@ -38,6 +47,12 @@ object PermissionUtil {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(fallback)
+        }
+    }
+
+    fun hasPhoneAndSmsPermissions(context: Context): Boolean {
+        return REQUIRED_PHONE_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
     }
 }
