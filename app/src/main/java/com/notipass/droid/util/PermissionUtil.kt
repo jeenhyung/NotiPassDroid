@@ -19,20 +19,37 @@ object PermissionUtil {
     )
 
     fun isNotificationListenerEnabled(context: Context): Boolean {
-        val packageNames = NotificationManagerCompat.getEnabledListenerPackages(context)
-        return packageNames.contains(context.packageName)
+        return try {
+            val packageNames = NotificationManagerCompat.getEnabledListenerPackages(context)
+            packageNames.contains(context.packageName)
+        } catch (e: Exception) {
+            false
+        }
     }
 
     fun openNotificationListenerSettings(context: Context) {
-        val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        try {
+            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val fallback = Intent(Settings.ACTION_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(fallback)
+            } catch (_: Exception) {}
         }
-        context.startActivity(intent)
     }
 
     fun isIgnoringBatteryOptimizations(context: Context): Boolean {
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        return powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+        return try {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+        } catch (e: Exception) {
+            false
+        }
     }
 
     fun requestIgnoreBatteryOptimizations(context: Context) {
@@ -43,16 +60,22 @@ object PermissionUtil {
             }
             context.startActivity(intent)
         } catch (e: Exception) {
-            val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            context.startActivity(fallback)
+            try {
+                val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(fallback)
+            } catch (_: Exception) {}
         }
     }
 
     fun hasPhoneAndSmsPermissions(context: Context): Boolean {
-        return REQUIRED_PHONE_PERMISSIONS.all {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        return try {
+            REQUIRED_PHONE_PERMISSIONS.all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 }
