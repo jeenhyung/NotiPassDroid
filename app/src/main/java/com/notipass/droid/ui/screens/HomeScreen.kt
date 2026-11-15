@@ -57,6 +57,7 @@ fun HomeScreen(
     var hasPhoneSmsPerms by remember {
         mutableStateOf(PermissionUtil.hasPhoneAndSmsPermissions(context))
     }
+    val isServiceConnected by NotificationPassService.isServiceConnected.collectAsState()
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -81,6 +82,7 @@ fun HomeScreen(
         isListenerEnabled = PermissionUtil.isNotificationListenerEnabled(context)
         isBatteryOptIgnored = PermissionUtil.isIgnoringBatteryOptimizations(context)
         hasPhoneSmsPerms = PermissionUtil.hasPhoneAndSmsPermissions(context)
+        NotificationPassService.rebindService(context)
         onDispose { }
     }
 
@@ -92,44 +94,50 @@ fun HomeScreen(
     ) {
         // 1. Status Overview Card
         item {
+            val statusColor = when {
+                !isListenerEnabled -> MaterialTheme.colorScheme.errorContainer
+                !isServiceConnected -> Color(0xFFFFF3E0)
+                else -> MaterialTheme.colorScheme.primaryContainer
+            }
+            val statusDotColor = when {
+                !isListenerEnabled -> StatusError
+                !isServiceConnected -> Color(0xFFE65100)
+                else -> StatusSuccess
+            }
+            val statusTitle = when {
+                !isListenerEnabled -> "알림 접근 권한 필요"
+                !isServiceConnected -> "알림 권한 허용됨 (서비스 연결 대기 중)"
+                else -> "알림 수신 서비스 정상 동작 중 (준비 완료)"
+            }
+            val statusDesc = when {
+                !isListenerEnabled -> "카카오톡 및 시스템 알림을 가로채려면 [알림 접근 권한]이 활성화되어 있어야 합니다."
+                !isServiceConnected -> "앱 업데이트 후 안드로이드 시스템이 알림 수신 연결을 일시 중단했습니다. 아래 [서비스 재연결]을 누르거나 설정에서 알림 접근 허용을 껐다 켜주세요."
+                else -> "기기의 카카오톡 알림 및 통화를 실시간 감지하여 등록된 번호로 문자를 자동 발송합니다."
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isListenerEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
-                ),
+                colors = CardDefaults.cardColors(containerColor = statusColor),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(12.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isListenerEnabled) StatusSuccess else StatusError)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (isListenerEnabled) "알림 수신 서비스 동작 중" else "알림 접근 권한 필요",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .clip(CircleShape)
+                                .background(statusDotColor)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = statusTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = if (isListenerEnabled) {
-                            "기기의 알림 및 통화를 감지하여 등록된 웹훅 및 자동 문자 규칙을 수행합니다."
-                        } else {
-                            "알림을 가로채고 전달하려면 [알림 접근 권한]이 활성화되어 있어야 합니다."
-                        },
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    Text(text = statusDesc, style = MaterialTheme.typography.bodyMedium)
 
                     if (!isListenerEnabled) {
                         Spacer(modifier = Modifier.height(12.dp))
@@ -140,6 +148,26 @@ fun HomeScreen(
                             Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("알림 접근 권한 설정 열기")
+                        }
+                    } else if (!isServiceConnected) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    NotificationPassService.rebindService(context)
+                                    Toast.makeText(context, "서비스 재연결을 요청했습니다.", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("서비스 재연결")
+                            }
+                            OutlinedButton(
+                                onClick = { PermissionUtil.openNotificationListenerSettings(context) }
+                            ) {
+                                Text("설정에서 껐다 켜기")
+                            }
                         }
                     }
 
@@ -288,6 +316,28 @@ fun HomeScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("로그 전체보기")
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                val mockPayload = com.notipass.droid.engine.NotificationPayload(
+                                    packageName = "com.kakao.talk",
+                                    appName = "카카오톡",
+                                    title = "홍길동",
+                                    content = "안녕하세요! NotiPass 카카오톡 수신 테스트 메시지입니다.",
+                                    subText = "테스트 단톡방"
+                                )
+                                NotificationPassService.processNotificationPayload(context, mockPayload)
+                                Toast.makeText(context, "가상 카톡 알림을 발송했습니다. [로그 전체보기]를 확인하세요!", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("카톡 알림 가상 시뮬레이션 테스트 (문자 전송 확인)")
                     }
                 }
             }

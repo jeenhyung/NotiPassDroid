@@ -16,7 +16,9 @@ import com.notipass.droid.model.TriggerType
 import com.notipass.droid.util.ContactUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class CallReceiver : BroadcastReceiver() {
@@ -25,12 +27,11 @@ class CallReceiver : BroadcastReceiver() {
         private const val TAG = "CallReceiver"
         private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-        // De-duplication cache
-        private var lastProcessedNumber: String? = null
-        private var lastProcessedTime: Long = 0
-        private var lastCallState: String? = null
-        private var wasRinging: Boolean = false
+        // Session & De-duplication tracking
+        private var hasSentIncomingCallAlert = false
+        private var fallbackJob: Job? = null
         private var ringingNumber: String? = null
+        private var wasRinging = false
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
@@ -38,50 +39,67 @@ class CallReceiver : BroadcastReceiver() {
 
         val stateStr = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
         val rawNumber = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER) ?: ""
-        val callerNumber = if (rawNumber.isNotBlank()) rawNumber else (ringingNumber ?: "발신번호 미표시")
 
-        Log.d(TAG, "Phone State Changed: state=$stateStr, incomingNumber=$callerNumber")
+        Log.d(TAG, "Phone State Changed: state=$stateStr, incomingNumber=$rawNumber, wasRinging=$wasRinging")
 
         when (stateStr) {
             TelephonyManager.EXTRA_STATE_RINGING -> {
                 wasRinging = true
+
                 if (rawNumber.isNotBlank()) {
+                    // Valid phone number received
                     ringingNumber = rawNumber
-                }
+                    fallbackJob?.cancel()
+                    fallbackJob = null
 
-                // Prevent multiple duplicate SMS for the same ringing cycle
-                val now = System.currentTimeMillis()
-                if (callerNumber == lastProcessedNumber && (now - lastProcessedTime) < 15000) {
-                    Log.d(TAG, "Duplicate RINGING broadcast ignored for $callerNumber")
-                    return
-                }
-                lastProcessedNumber = callerNumber
-                lastProcessedTime = now
-
-                receiverScope.launch {
-                    handleCallTrigger(context, TriggerType.INCOMING_CALL, callerNumber)
+                    if (!hasSentIncomingCallAlert) {
+                        hasSentIncomingCallAlert = true
+                        receiverScope.launch {
+                            handleCallTrigger(context, TriggerType.INCOMING_CALL, rawNumber)
+                        }
+                    }
+                } else {
+                    // Android OS sends an initial RINGING broadcast before caller ID arrives.
+                    // Wait 1.2 seconds for the second broadcast with the actual number.
+                    if (!hasSentIncomingCallAlert && fallbackJob == null) {
+                        fallbackJob = receiverScope.launch {
+                            delay(1200)
+                            if (!hasSentIncomingCallAlert) {
+                                hasSentIncomingCallAlert = true
+                                val finalNumber = ringingNumber ?: "발신번호 미표시"
+                                handleCallTrigger(context, TriggerType.INCOMING_CALL, finalNumber)
+                            }
+                        }
+                    }
                 }
             }
 
             TelephonyManager.EXTRA_STATE_OFFHOOK -> {
-                // Call was answered
+                // Call answered: cancel pending fallback
+                fallbackJob?.cancel()
+                fallbackJob = null
                 wasRinging = false
             }
 
             TelephonyManager.EXTRA_STATE_IDLE -> {
                 // Call ended or missed
+                fallbackJob?.cancel()
+                fallbackJob = null
+
                 if (wasRinging) {
-                    // Missed call!
-                    wasRinging = false
-                    val missedNum = ringingNumber ?: callerNumber
+                    // Missed call without answering
+                    val missedNum = ringingNumber ?: "발신번호 미표시"
                     receiverScope.launch {
                         handleCallTrigger(context, TriggerType.MISSED_CALL, missedNum)
                     }
                 }
+
+                // Reset session state for the next call
+                wasRinging = false
+                hasSentIncomingCallAlert = false
                 ringingNumber = null
             }
         }
-        lastCallState = stateStr
     }
 
     private suspend fun handleCallTrigger(context: Context, triggerType: TriggerType, callerNumber: String) {
@@ -94,7 +112,7 @@ class CallReceiver : BroadcastReceiver() {
             return
         }
 
-        // 1. Resolve Contact Name if registered in user's phone contacts
+        // Resolve Contact Name if registered in user's phone contacts
         val contactName = ContactUtil.getContactName(context, callerNumber)
         val callerDisplay = if (!contactName.isNullOrBlank()) {
             "$contactName($callerNumber)"
