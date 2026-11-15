@@ -65,7 +65,7 @@ fun RuleEditScreen(
     // SMS Settings
     var smsTargetNumber by remember { mutableStateOf("") }
     var smsTemplate by remember {
-        mutableStateOf("[NotiPass] {caller} 번호로 전화가 수신되었습니다. ({date})")
+        mutableStateOf("[NotiPass] {caller_display}님으로부터 전화가 수신되었습니다. ({date})")
     }
 
     var showAppPicker by remember { mutableStateOf(false) }
@@ -326,7 +326,7 @@ fun RuleEditScreen(
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text(text = "메시지 템플릿 치환 토큰:", style = MaterialTheme.typography.bodySmall)
+                        Text(text = "메시지 템플릿 치환 토큰 (탭하여 삽입):", style = MaterialTheme.typography.bodySmall)
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(
                             modifier = Modifier
@@ -334,10 +334,17 @@ fun RuleEditScreen(
                                 .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            listOf("{caller}", "{date}", "{time}", "{content}").forEach { token ->
+                            listOf(
+                                "{caller_display}" to "이름+번호",
+                                "{name}" to "연락처 이름",
+                                "{caller}" to "발신 번호",
+                                "{target}" to "설정된 번호",
+                                "{date}" to "일시",
+                                "{time}" to "시각"
+                            ).forEach { (token, desc) ->
                                 AssistChip(
                                     onClick = { smsTemplate += token },
-                                    label = { Text(token) }
+                                    label = { Text("$token ($desc)") }
                                 )
                             }
                         }
@@ -366,6 +373,10 @@ fun RuleEditScreen(
                                         "caller" to "010-1234-5678",
                                         "number" to "010-1234-5678",
                                         "phone" to "010-1234-5678",
+                                        "name" to "홍길동",
+                                        "contact" to "홍길동",
+                                        "caller_display" to "홍길동(010-1234-5678)",
+                                        "target" to smsTargetNumber,
                                         "content" to "테스트 수신 내용"
                                     )
                                     val target = if (smsTargetNumber.contains("{caller}")) "01012345678" else smsTargetNumber

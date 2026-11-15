@@ -15,7 +15,8 @@ object PermissionUtil {
     val REQUIRED_PHONE_PERMISSIONS = arrayOf(
         Manifest.permission.READ_PHONE_STATE,
         Manifest.permission.READ_CALL_LOG,
-        Manifest.permission.SEND_SMS
+        Manifest.permission.SEND_SMS,
+        Manifest.permission.READ_CONTACTS
     )
 
     fun isNotificationListenerEnabled(context: Context): Boolean {

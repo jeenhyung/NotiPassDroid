@@ -173,14 +173,14 @@ fun HomeScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (hasPhoneSmsPerms) "전화 수신 및 문자 발송 활성화됨" else "전화 수신 감지 & 문자 권한 필요",
+                            text = if (hasPhoneSmsPerms) "전화 수신, 연락처 조회 및 문자 발송 활성화됨" else "전화/연락처/SMS 권한 필요",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "전화가 왔을 때 번호를 감지하고 등록된 번호로 안내 문자를 자동 발송하려면 전화 상태/통화 기록/SMS 발송 권한이 필요합니다.",
+                        text = "전화가 왔을 때 번호를 감지하고, 저장된 연락처 이름을 확인하여 등록된 번호로 안내 문자를 자동 발송하려면 권한이 필요합니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -195,7 +195,7 @@ fun HomeScreen(
                         ) {
                             Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("전화 및 SMS 권한 허용하기")
+                            Text("전화/연락처/SMS 권한 허용하기")
                         }
                     } else {
                         OutlinedButton(
@@ -321,7 +321,7 @@ fun HomeScreen(
     if (showQuickCallSmsDialog) {
         var quickTargetNumber by remember { mutableStateOf("") }
         var quickSmsTemplate by remember {
-            mutableStateOf("[NotiPass] {caller} 번호로 전화가 수신되었습니다. ({date})")
+            mutableStateOf("[NotiPass] {caller_display}님으로부터 전화가 수신되었습니다. ({date})")
         }
         var sendToCallerOnly by remember { mutableStateOf(false) }
 
@@ -331,7 +331,7 @@ fun HomeScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "전화가 올 때 자동으로 SMS를 전송할 대상 번호와 내용을 설정하세요.",
+                        text = "전화가 올 때 자동으로 SMS를 전송할 대상 번호와 내용을 설정하세요. 연락처에 저장된 번호면 이름도 자동 표시됩니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -344,7 +344,7 @@ fun HomeScreen(
                                 if (it) {
                                     quickSmsTemplate = "[자동응답] 현재 통화가 어렵습니다. 용건을 문자로 남겨주시면 확인 후 연락드리겠습니다."
                                 } else {
-                                    quickSmsTemplate = "[NotiPass] {caller} 번호로 전화가 수신되었습니다. ({date})"
+                                    quickSmsTemplate = "[NotiPass] {caller_display}님으로부터 전화가 수신되었습니다. ({date})"
                                 }
                             }
                         )

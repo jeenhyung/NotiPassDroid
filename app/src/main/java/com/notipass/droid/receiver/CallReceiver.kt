@@ -6,16 +6,14 @@ import android.content.Intent
 import android.telephony.TelephonyManager
 import android.util.Log
 import com.notipass.droid.data.db.AppDatabase
-import com.notipass.droid.engine.MatchResult
-import com.notipass.droid.engine.RuleMatcher
 import com.notipass.droid.engine.SmsDispatcher
 import com.notipass.droid.engine.TemplateEngine
 import com.notipass.droid.engine.WebhookDispatcher
 import com.notipass.droid.model.ActionType
 import com.notipass.droid.model.LogStatus
 import com.notipass.droid.model.NotificationLog
-import com.notipass.droid.model.Rule
 import com.notipass.droid.model.TriggerType
+import com.notipass.droid.util.ContactUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -96,21 +94,35 @@ class CallReceiver : BroadcastReceiver() {
             return
         }
 
-        val variables = mapOf(
+        // 1. Resolve Contact Name if registered in user's phone contacts
+        val contactName = ContactUtil.getContactName(context, callerNumber)
+        val callerDisplay = if (!contactName.isNullOrBlank()) {
+            "$contactName($callerNumber)"
+        } else {
+            callerNumber
+        }
+
+        val baseVariables = mapOf(
             "caller" to callerNumber,
             "number" to callerNumber,
             "phone" to callerNumber,
-            "title" to if (triggerType == TriggerType.INCOMING_CALL) "수신 전화 ($callerNumber)" else "부재중 전화 ($callerNumber)",
+            "name" to (contactName ?: "알 수 없음"),
+            "contact" to (contactName ?: "알 수 없음"),
+            "caller_name" to (contactName ?: "알 수 없음"),
+            "caller_display" to callerDisplay,
+            "title" to if (triggerType == TriggerType.INCOMING_CALL) "수신 전화: $callerDisplay" else "부재중 전화: $callerDisplay",
             "app" to "전화 (Phone)",
             "package" to "com.android.phone",
-            "content" to "$callerNumber 번호로부터 전화가 수신되었습니다."
+            "content" to "$callerDisplay 님으로부터 전화가 수신되었습니다."
         )
 
         for (rule in matchingRules) {
-            // Optional caller number filter: if titleKeyword is specified, check if caller matches
+            // Optional caller number or contact name filter
             if (rule.titleKeyword.isNotBlank()) {
-                val matchesCaller = callerNumber.contains(rule.titleKeyword.trim(), ignoreCase = true)
-                if (!matchesCaller) continue
+                val keyword = rule.titleKeyword.trim()
+                val matchesNumber = callerNumber.contains(keyword, ignoreCase = true)
+                val matchesName = contactName?.contains(keyword, ignoreCase = true) == true
+                if (!matchesNumber && !matchesName) continue
             }
 
             var actionSuccess = true
@@ -123,24 +135,33 @@ class CallReceiver : BroadcastReceiver() {
                 val targetNumber = if (rule.smsTargetNumber.isBlank() || rule.smsTargetNumber.contains("{caller}")) {
                     callerNumber
                 } else {
-                    TemplateEngine.renderText(rule.smsTargetNumber, variables, isJson = false)
+                    TemplateEngine.renderText(rule.smsTargetNumber, baseVariables, isJson = false)
                 }
 
-                val smsBody = TemplateEngine.renderText(rule.smsTemplate, variables, isJson = false)
+                val targetContact = ContactUtil.getContactName(context, targetNumber)
+                val targetDisplay = if (!targetContact.isNullOrBlank()) "$targetContact($targetNumber)" else targetNumber
+
+                val smsVariables = baseVariables + mapOf(
+                    "target" to targetNumber,
+                    "target_number" to targetNumber,
+                    "target_display" to targetDisplay
+                )
+
+                val smsBody = TemplateEngine.renderText(rule.smsTemplate, smsVariables, isJson = false)
                 val smsResult = SmsDispatcher.send(context, targetNumber, smsBody)
 
                 if (!smsResult.isSuccess) {
                     actionSuccess = false
                     actionError = "SMS 발송 실패: ${smsResult.errorMessage}"
                 } else {
-                    responseBody = "SMS 전송 완료 ($targetNumber)"
+                    responseBody = "SMS 전송 완료 ($targetDisplay)"
                 }
             }
 
             // 2. Webhook Action
             if (rule.actionType == ActionType.WEBHOOK || rule.actionType == ActionType.BOTH) {
-                val renderedUrl = TemplateEngine.renderText(rule.webhookUrl, variables, isJson = false)
-                val renderedBody = TemplateEngine.renderText(rule.webhookBodyTemplate, variables, isJson = true)
+                val renderedUrl = TemplateEngine.renderText(rule.webhookUrl, baseVariables, isJson = false)
+                val renderedBody = TemplateEngine.renderText(rule.webhookBodyTemplate, baseVariables, isJson = true)
 
                 val webhookResult = WebhookDispatcher.send(
                     url = renderedUrl,
@@ -161,9 +182,9 @@ class CallReceiver : BroadcastReceiver() {
                 ruleName = rule.name,
                 packageName = "com.android.phone",
                 appName = if (triggerType == TriggerType.INCOMING_CALL) "수신 전화" else "부재중 전화",
-                title = "전화 감지: $callerNumber",
+                title = "전화 감지: $callerDisplay",
                 content = if (rule.actionType != ActionType.WEBHOOK) {
-                    "문자 발송 -> ${if (rule.smsTargetNumber.isBlank()) callerNumber else rule.smsTargetNumber}: ${rule.smsTemplate}"
+                    "문자 발송 -> ${rule.smsTargetNumber.ifBlank { callerNumber }}: ${rule.smsTemplate}"
                 } else {
                     "웹훅 전송: ${rule.webhookUrl}"
                 },
