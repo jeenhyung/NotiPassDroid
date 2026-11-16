@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.notipass.droid.model.KakaoSummaryConfig
 import com.notipass.droid.model.NotificationLog
 import com.notipass.droid.model.Rule
@@ -51,12 +53,41 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                try {
+                    db.execSQL("ALTER TABLE `rules` ADD COLUMN `triggerType` TEXT NOT NULL DEFAULT 'NOTIFICATION'")
+                    db.execSQL("ALTER TABLE `rules` ADD COLUMN `targetPackage` TEXT")
+                    db.execSQL("ALTER TABLE `rules` ADD COLUMN `targetAppName` TEXT")
+                    db.execSQL("ALTER TABLE `rules` ADD COLUMN `smsTargetNumber` TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE `rules` ADD COLUMN `smsTemplate` TEXT NOT NULL DEFAULT ''")
+                } catch (_: Exception) {}
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `kakao_summary_configs` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `roomName` TEXT NOT NULL, `isEnabled` INTEGER NOT NULL DEFAULT 1, `dismissNotification` INTEGER NOT NULL DEFAULT 1, `summaryThresholdCount` INTEGER NOT NULL DEFAULT 30, `deliveryType` TEXT NOT NULL DEFAULT 'SELF_SMS', `targetSmsNumber` TEXT NOT NULL DEFAULT '', `lastSummarizedTime` INTEGER NOT NULL DEFAULT 0, `createdAt` INTEGER NOT NULL DEFAULT 0)")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                try {
+                    db.execSQL("ALTER TABLE `kakao_summary_configs` ADD COLUMN `isScheduledTimeEnabled` INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE `kakao_summary_configs` ADD COLUMN `scheduledHour` INTEGER NOT NULL DEFAULT 21")
+                    db.execSQL("ALTER TABLE `kakao_summary_configs` ADD COLUMN `scheduledMinute` INTEGER NOT NULL DEFAULT 0")
+                } catch (_: Exception) {}
+            }
+        }
+
         private fun buildDatabase(context: Context): AppDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 DB_NAME
             )
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .fallbackToDestructiveMigration()
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
