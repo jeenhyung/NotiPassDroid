@@ -38,6 +38,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".CrashActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NotiPassDroid" />
+
         <!-- Notification Listener Service -->
         <service
             android:name=".service.NotificationPassService"

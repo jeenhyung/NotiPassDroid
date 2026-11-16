@@ -28,15 +28,26 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
-                try {
-                    buildDatabase(context)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to initialize database. Wiping and recreating...", e)
+                val db = try {
+                    val built = buildDatabase(context)
+                    // Actively touch SQLite database to trigger migration/creation immediately
+                    built.openHelper.writableDatabase
+                    built
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Fatal DB opening error. Deleting database file and recreating...", t)
                     try {
                         context.deleteDatabase(DB_NAME)
                     } catch (_: Exception) {}
-                    buildDatabase(context)
-                }.also { INSTANCE = it }
+                    val fresh = buildDatabase(context)
+                    try {
+                        fresh.openHelper.writableDatabase
+                    } catch (t2: Throwable) {
+                        Log.e(TAG, "Fresh DB also failed", t2)
+                    }
+                    fresh
+                }
+                INSTANCE = db
+                db
             }
         }
 
