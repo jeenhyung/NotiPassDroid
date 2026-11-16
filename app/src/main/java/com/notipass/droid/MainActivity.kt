@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Rule
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Refresh
@@ -29,6 +30,7 @@ import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import com.notipass.droid.data.db.AppDatabase
 import com.notipass.droid.ui.screens.HomeScreen
+import com.notipass.droid.ui.screens.KakaoSummaryScreen
 import com.notipass.droid.ui.screens.LogsScreen
 import com.notipass.droid.ui.screens.RuleEditScreen
 import com.notipass.droid.ui.screens.RulesScreen
@@ -107,6 +109,16 @@ fun AppNavigation(db: AppDatabase) {
                         label = { Text("규칙 관리") }
                     )
                     NavigationBarItem(
+                        selected = currentRoute == "kakao_summary",
+                        onClick = {
+                            navController.navigate("kakao_summary") {
+                                popUpTo("home")
+                            }
+                        },
+                        icon = { Icon(Icons.Default.AutoAwesome, contentDescription = "AI 요약") },
+                        label = { Text("AI 요약/백업") }
+                    )
+                    NavigationBarItem(
                         selected = currentRoute == "logs",
                         onClick = {
                             navController.navigate("logs") {
@@ -129,7 +141,8 @@ fun AppNavigation(db: AppDatabase) {
                 HomeScreen(
                     db = db,
                     onNavigateToRules = { navController.navigate("rules") },
-                    onNavigateToLogs = { navController.navigate("logs") }
+                    onNavigateToLogs = { navController.navigate("logs") },
+                    onNavigateToKakaoSummary = { navController.navigate("kakao_summary") }
                 )
             }
             composable("rules") {
@@ -139,6 +152,9 @@ fun AppNavigation(db: AppDatabase) {
                         navController.navigate("rule_edit/$ruleId")
                     }
                 )
+            }
+            composable("kakao_summary") {
+                KakaoSummaryScreen(db = db)
             }
             composable(
                 route = "rule_edit/{ruleId}",

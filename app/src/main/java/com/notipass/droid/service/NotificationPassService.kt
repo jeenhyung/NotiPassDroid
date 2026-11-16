@@ -10,6 +10,9 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.notipass.droid.data.db.AppDatabase
+import com.notipass.droid.data.storage.KakaoLogStorage
+import com.notipass.droid.engine.GoogleDriveDispatcher
+import com.notipass.droid.engine.KakaoSummaryEngine
 import com.notipass.droid.engine.NotificationPayload
 import com.notipass.droid.engine.RuleMatcher
 import com.notipass.droid.engine.SmsDispatcher
@@ -243,9 +246,80 @@ class NotificationPassService : NotificationListenerService() {
 
         Log.i(TAG, "Notification received: pkg=$pkgName, title=$title, text=$text, subText=$subText")
 
-        // Process matching rules in background coroutine
+        // Process in background coroutine
         serviceScope.launch {
+            if (pkgName == "com.kakao.talk") {
+                val intercepted = handleKakaoMessage(sbn, title, text, subText)
+                if (intercepted) {
+                    return@launch
+                }
+            }
             processNotificationPayload(applicationContext, payload)
+        }
+    }
+
+    private suspend fun handleKakaoMessage(
+        sbn: StatusBarNotification,
+        title: String,
+        text: String,
+        subText: String
+    ): Boolean {
+        return try {
+            val db = AppDatabase.getDatabase(applicationContext)
+            val enabledConfigs = db.kakaoSummaryDao().getEnabledConfigs()
+            if (enabledConfigs.isEmpty()) return false
+
+            val matchedConfig = enabledConfigs.firstOrNull { cfg ->
+                val target = cfg.roomName.trim()
+                target.isNotEmpty() && (
+                    subText.trim().equals(target, ignoreCase = true) ||
+                    title.trim().equals(target, ignoreCase = true) ||
+                    subText.contains(target, ignoreCase = true)
+                )
+            } ?: return false
+
+            Log.i(TAG, "Matched KakaoTalk room: ${matchedConfig.roomName} (dismiss=${matchedConfig.dismissNotification})")
+
+            // 1. Dismiss notification if configured (suppress sound/vibration/status bar)
+            if (matchedConfig.dismissNotification) {
+                try {
+                    cancelNotification(sbn.key)
+                    Log.d(TAG, "Canceled notification key: ${sbn.key}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to cancel notification", e)
+                }
+            }
+
+            // 2. Append message to local storage
+            val sender = if (subText.isNotBlank()) title.ifBlank { "알 수 없음" } else "상대방"
+            val line = KakaoLogStorage.appendMessage(applicationContext, matchedConfig.roomName, sender, text, sbn.postTime)
+
+            // 3. Sync to Google Drive in real-time if enabled
+            if (line.isNotBlank()) {
+                GoogleDriveDispatcher.appendMessageAsync(
+                    context = applicationContext,
+                    roomName = matchedConfig.roomName,
+                    sender = sender,
+                    text = text,
+                    timestamp = sbn.postTime,
+                    formattedLine = line
+                )
+            }
+
+            // 4. Check message count threshold for auto-summary
+            val currentCount = KakaoLogStorage.getMessageCount(applicationContext, matchedConfig.roomName)
+            Log.d(TAG, "Room ${matchedConfig.roomName} accumulated: $currentCount / ${matchedConfig.summaryThresholdCount}")
+
+            if (matchedConfig.summaryThresholdCount > 0 && currentCount >= matchedConfig.summaryThresholdCount) {
+                Log.i(TAG, "Threshold reached ($currentCount/${matchedConfig.summaryThresholdCount}). Triggering Gemini summary...")
+                KakaoSummaryEngine.executeSummary(applicationContext, matchedConfig, isManual = false)
+            }
+
+            // Return true if notification was dismissed to suppress further general rule matching
+            matchedConfig.dismissNotification
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in handleKakaoMessage", e)
+            false
         }
     }
 

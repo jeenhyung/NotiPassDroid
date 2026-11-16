@@ -43,7 +43,8 @@ import java.util.*
 fun HomeScreen(
     db: AppDatabase,
     onNavigateToRules: () -> Unit,
-    onNavigateToLogs: () -> Unit
+    onNavigateToLogs: () -> Unit,
+    onNavigateToKakaoSummary: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -316,6 +317,17 @@ fun HomeScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("로그 전체보기")
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = onNavigateToKakaoSummary,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("단톡방 AI 요약 & 드라이브 백업 열기")
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))

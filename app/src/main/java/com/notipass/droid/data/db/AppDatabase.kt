@@ -5,17 +5,19 @@ import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import com.notipass.droid.model.KakaoSummaryConfig
 import com.notipass.droid.model.NotificationLog
 import com.notipass.droid.model.Rule
 
 @Database(
-    entities = [Rule::class, NotificationLog::class],
-    version = 2, // Incremented from 1 to 2 to trigger destructive migration
+    entities = [Rule::class, NotificationLog::class, KakaoSummaryConfig::class],
+    version = 3, // Incremented to 3 for KakaoSummaryConfig
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun ruleDao(): RuleDao
     abstract fun logDao(): LogDao
+    abstract fun kakaoSummaryDao(): KakaoSummaryDao
 
     companion object {
         private const val TAG = "AppDatabase"
