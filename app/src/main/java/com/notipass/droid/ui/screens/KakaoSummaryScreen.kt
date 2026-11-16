@@ -248,7 +248,7 @@ fun KakaoSummaryScreen(
                         }
 
                         Text(
-                            text = "감시 대상 단톡방 메시지가 수신될 때마다 내 구글 드라이브의 '카카오톡_대화_백업/[방이름].txt' 파일에 실시간 누적 저장됩니다.",
+                            text = "감시 대상 단톡방 메시지가 수신될 때마다 내 구글 드라이브의 '카카오톡_대화_백업/[방이름]' Google Docs(구글 문서)에 실시간 누적 저장됩니다. 제미나이 앱에서 '@Google Docs [방이름]'으로 바로 요약할 수 있습니다.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline
                         )
@@ -291,10 +291,10 @@ fun KakaoSummaryScreen(
                                         }
                                         isTestingDrive = true
                                         coroutineScope.launch {
-                                            val testResult = GoogleDriveDispatcher.testConnection(googleDriveUrl)
+                                            val testResult = GoogleDriveDispatcher.testConnection(googleDriveUrl, geminiApiKey)
                                             isTestingDrive = false
                                             if (testResult.isSuccess) {
-                                                Toast.makeText(context, "🎉 구글 드라이브 연동 성공! 테스트 파일이 생성되었습니다.", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "🎉 연동 성공! 구글 드라이브에 Google Docs 문서가 생성되었습니다.", Toast.LENGTH_LONG).show()
                                             } else {
                                                 Toast.makeText(context, "연동 실패: ${testResult.errorMessage}", Toast.LENGTH_LONG).show()
                                             }
@@ -322,7 +322,7 @@ fun KakaoSummaryScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("구글 드라이브 1분 연동 가이드 확인")
+                                Text("구글 문서 연동 & 매일 자동 요약 스케줄 가이드")
                             }
 
                             if (showDriveGuide) {
@@ -332,12 +332,18 @@ fun KakaoSummaryScreen(
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text("1. [스크립트 복사] 버튼을 누릅니다.", fontSize = 12.sp)
-                                        Text("2. PC나 브라우저에서 script.google.com 에 접속 후 [새 프로젝트]를 만듭니다.", fontSize = 12.sp)
+                                        Text("1. 위 [스크립트 복사] 버튼을 누릅니다.", fontSize = 12.sp)
+                                        Text("2. script.google.com 에 접속 후 [새 프로젝트]를 만듭니다.", fontSize = 12.sp)
                                         Text("3. 기존 코드를 지우고 복사한 스크립트를 붙여넣은 뒤 저장(Ctrl+S)합니다.", fontSize = 12.sp)
                                         Text("4. 우측 상단 [배포] -> [새 배포] 클릭", fontSize = 12.sp)
-                                        Text("5. 톱니바퀴 -> [웹 앱] 선택 후, 액세스 권한을 '모든 사용자(Anyone)'로 지정하여 배포합니다.", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                        Text("6. 배포된 '웹 앱 URL'을 복사해 위 입력창에 넣으면 설정 완료!", fontSize = 12.sp)
+                                        Text("5. 톱니바퀴 -> [웹 앱] 선택, 액세스 권한: '모든 사용자(Anyone)'로 지정하여 배포합니다.", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                        Text("6. 배포된 '웹 앱 URL'을 복사해 위 입력창에 넣고 [연동 테스트]를 누르면 완료!", fontSize = 12.sp)
+                                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                        Text("⏰ [매일 밤 자동 요약 스케줄 (휴대폰 배터리 소모 0%)]", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
+                                        Text("• script.google.com 좌측 '트리거(⏰ 시계 아이콘)' 클릭 -> [트리거 추가]", fontSize = 11.sp)
+                                        Text("• 실행할 함수: 'dailyScheduleSummary' 선택", fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        Text("• 이벤트 소스: '시간 기반' -> '일 단위 타이머(예: 오후 10시~11시)' 저장", fontSize = 11.sp)
+                                        Text("• 이제 폰이 꺼져 있어도 구글 서버가 매일 밤 대화록을 읽고 Gemini로 자동 요약하여 구글 문서에 기록합니다!", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                                     }
                                 }
                             }
