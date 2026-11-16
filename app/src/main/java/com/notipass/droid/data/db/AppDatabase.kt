@@ -11,7 +11,7 @@ import com.notipass.droid.model.Rule
 
 @Database(
     entities = [Rule::class, NotificationLog::class, KakaoSummaryConfig::class],
-    version = 3, // Incremented to 3 for KakaoSummaryConfig
+    version = 4, // Incremented to 4 for scheduled time fields
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

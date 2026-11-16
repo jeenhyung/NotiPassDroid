@@ -32,6 +32,7 @@ import com.notipass.droid.data.preference.AppPreferences
 import com.notipass.droid.data.storage.KakaoLogStorage
 import com.notipass.droid.engine.GoogleDriveDispatcher
 import com.notipass.droid.engine.KakaoSummaryEngine
+import com.notipass.droid.engine.KakaoSummaryScheduler
 import com.notipass.droid.model.KakaoSummaryConfig
 import com.notipass.droid.model.SummaryDeliveryType
 import kotlinx.coroutines.Dispatchers
@@ -408,6 +409,7 @@ fun KakaoSummaryScreen(
                         onToggleEnabled = { enabled ->
                             coroutineScope.launch {
                                 db.kakaoSummaryDao().setConfigEnabled(config.id, enabled)
+                                KakaoSummaryScheduler.schedule(context, config.copy(isEnabled = enabled))
                             }
                         },
                         onEdit = {
@@ -416,6 +418,7 @@ fun KakaoSummaryScreen(
                         },
                         onDelete = {
                             coroutineScope.launch {
+                                KakaoSummaryScheduler.cancel(context, config.id)
                                 db.kakaoSummaryDao().deleteConfig(config)
                                 KakaoLogStorage.clearLogs(context, config.roomName)
                                 Toast.makeText(context, "${config.roomName} 설정이 삭제되었습니다.", Toast.LENGTH_SHORT).show()
@@ -457,13 +460,15 @@ fun KakaoSummaryScreen(
             onDismiss = { showAddEditDialog = false },
             onSave = { newConfig ->
                 coroutineScope.launch {
-                    if (editingConfig == null) {
-                        db.kakaoSummaryDao().insertConfig(newConfig)
-                        Toast.makeText(context, "'${newConfig.roomName}' 단톡방 감시가 시작되었습니다.", Toast.LENGTH_SHORT).show()
+                    val savedConfig = if (editingConfig == null) {
+                        val newId = db.kakaoSummaryDao().insertConfig(newConfig)
+                        newConfig.copy(id = newId)
                     } else {
                         db.kakaoSummaryDao().updateConfig(newConfig)
-                        Toast.makeText(context, "'${newConfig.roomName}' 설정이 업데이트되었습니다.", Toast.LENGTH_SHORT).show()
+                        newConfig
                     }
+                    KakaoSummaryScheduler.schedule(context, savedConfig)
+                    Toast.makeText(context, "'${savedConfig.roomName}' 설정이 저장되었습니다.", Toast.LENGTH_SHORT).show()
                     showAddEditDialog = false
                 }
             }
@@ -537,6 +542,16 @@ fun RoomConfigCard(
             ) {
                 if (config.dismissNotification) {
                     BadgeChip(text = "🔕 상단바 알림 자동 숨김", color = Color(0xFFFFEBEE), textColor = Color(0xFFC62828))
+                }
+                if (config.isScheduledTimeEnabled) {
+                    val amPm = if (config.scheduledHour < 12) "오전" else "오후"
+                    val displayHour = when {
+                        config.scheduledHour == 0 -> 12
+                        config.scheduledHour > 12 -> config.scheduledHour - 12
+                        else -> config.scheduledHour
+                    }
+                    val timeStr = String.format(Locale.KOREAN, "%s %d:%02d", amPm, displayHour, config.scheduledMinute)
+                    BadgeChip(text = "⏰ 매일 $timeStr", color = Color(0xFFE8F5E9), textColor = Color(0xFF2E7D32))
                 }
                 val deliveryText = when (config.deliveryType) {
                     SummaryDeliveryType.SELF_SMS -> "나에게 SMS"
@@ -642,6 +657,9 @@ fun RoomConfigEditDialog(
     var roomName by remember { mutableStateOf(initialConfig?.roomName ?: "") }
     var dismissNotification by remember { mutableStateOf(initialConfig?.dismissNotification ?: true) }
     var thresholdCountText by remember { mutableStateOf((initialConfig?.summaryThresholdCount ?: 30).toString()) }
+    var isScheduledTimeEnabled by remember { mutableStateOf(initialConfig?.isScheduledTimeEnabled ?: false) }
+    var scheduledHour by remember { mutableStateOf(initialConfig?.scheduledHour ?: 21) }
+    var scheduledMinute by remember { mutableStateOf(initialConfig?.scheduledMinute ?: 0) }
     var deliveryType by remember { mutableStateOf(initialConfig?.deliveryType ?: SummaryDeliveryType.SELF_SMS) }
     var targetSmsNumber by remember { mutableStateOf(initialConfig?.targetSmsNumber ?: "") }
 
@@ -685,10 +703,62 @@ fun RoomConfigEditDialog(
                     value = thresholdCountText,
                     onValueChange = { thresholdCountText = it.filter { char -> char.isDigit() } },
                     label = { Text("대화 N개 누적 시 자동 요약") },
-                    placeholder = { Text("30 (0이면 자동요약 없이 수동만)") },
+                    placeholder = { Text("30 (0이면 누적요약 없이 매일 지정 시간에만)") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                // Scheduled Daily Time Option
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { isScheduledTimeEnabled = !isScheduledTimeEnabled }
+                ) {
+                    Checkbox(
+                        checked = isScheduledTimeEnabled,
+                        onCheckedChange = { isScheduledTimeEnabled = it }
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column {
+                        Text("⏰ 매일 지정된 시간에 정기 요약", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("설정한 시각에 자동으로 Gemini 요약이 발송됩니다.", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                    }
+                }
+
+                if (isScheduledTimeEnabled) {
+                    val amPm = if (scheduledHour < 12) "오전" else "오후"
+                    val displayHour = when {
+                        scheduledHour == 0 -> 12
+                        scheduledHour > 12 -> scheduledHour - 12
+                        else -> scheduledHour
+                    }
+                    val timeString = String.format(Locale.KOREAN, "%s %d시 %02d분", amPm, displayHour, scheduledMinute)
+
+                    OutlinedButton(
+                        onClick = {
+                            android.app.TimePickerDialog(
+                                context,
+                                { _, h, m ->
+                                    scheduledHour = h
+                                    scheduledMinute = m
+                                },
+                                scheduledHour,
+                                scheduledMinute,
+                                false
+                            ).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.AccessTime, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("발송 시간: $timeString (터치하여 변경)")
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
 
                 Text("요약 결과 받을 곳", fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
@@ -740,13 +810,19 @@ fun RoomConfigEditDialog(
                         dismissNotification = dismissNotification,
                         summaryThresholdCount = threshold,
                         deliveryType = deliveryType,
-                        targetSmsNumber = targetSmsNumber.trim()
+                        targetSmsNumber = targetSmsNumber.trim(),
+                        isScheduledTimeEnabled = isScheduledTimeEnabled,
+                        scheduledHour = scheduledHour,
+                        scheduledMinute = scheduledMinute
                     ) ?: KakaoSummaryConfig(
                         roomName = roomName.trim(),
                         dismissNotification = dismissNotification,
                         summaryThresholdCount = threshold,
                         deliveryType = deliveryType,
-                        targetSmsNumber = targetSmsNumber.trim()
+                        targetSmsNumber = targetSmsNumber.trim(),
+                        isScheduledTimeEnabled = isScheduledTimeEnabled,
+                        scheduledHour = scheduledHour,
+                        scheduledMinute = scheduledMinute
                     )
                     onSave(configToSave)
                 }

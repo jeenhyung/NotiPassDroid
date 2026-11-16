@@ -13,6 +13,9 @@ data class KakaoSummaryConfig(
     val summaryThresholdCount: Int = 30,     // 대화 N개 누적 시 자동 요약 (0이면 수동 전용)
     val deliveryType: SummaryDeliveryType = SummaryDeliveryType.SELF_SMS,
     val targetSmsNumber: String = "",        // 빈값이면 AppPreferences의 내 번호 사용
+    val isScheduledTimeEnabled: Boolean = false, // 매일 지정된 시간에 자동 요약
+    val scheduledHour: Int = 21,                 // 0~23 (기본 오후 9시)
+    val scheduledMinute: Int = 0,                // 0~59 (기본 0분)
     val lastSummarizedTime: Long = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
