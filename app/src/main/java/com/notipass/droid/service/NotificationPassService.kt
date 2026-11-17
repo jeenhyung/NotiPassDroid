@@ -41,6 +41,15 @@ class NotificationPassService : NotificationListenerService() {
         private val _isServiceConnected = MutableStateFlow(false)
         val isServiceConnected = _isServiceConnected.asStateFlow()
 
+        // Cache to deduplicate rapid duplicate notifications (KakaoTalk group summary / micro-updates)
+        private val recentNotificationCache = java.util.Collections.synchronizedMap(
+            object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
+                    return size > 250
+                }
+            }
+        )
+
         fun rebindService(context: Context) {
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -181,6 +190,19 @@ class NotificationPassService : NotificationListenerService() {
         if (pkgName == packageName) return
 
         val notification = sbn.notification ?: return
+
+        // 1. Filter out Android Group Summary notifications (KakaoTalk group bundle)
+        if ((notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0) {
+            Log.d(TAG, "Ignored group summary notification from $pkgName (key=${sbn.key})")
+            return
+        }
+
+        // 2. Filter out ongoing event notifications (e.g. calls, music playback)
+        if ((notification.flags and Notification.FLAG_ONGOING_EVENT) != 0) {
+            Log.d(TAG, "Ignored ongoing event notification from $pkgName")
+            return
+        }
+
         val extras = notification.extras ?: return
 
         // 1. Title Extraction
@@ -224,6 +246,16 @@ class NotificationPassService : NotificationListenerService() {
             Log.d(TAG, "Ignored empty notification from $pkgName")
             return
         }
+
+        // 3. De-duplicate identical notifications arriving in rapid bursts (within 2.5 seconds)
+        val dedupeKey = "$pkgName|$title|$text|$subText"
+        val now = System.currentTimeMillis()
+        val lastSeen = recentNotificationCache[dedupeKey] ?: 0L
+        if (now - lastSeen < 2500L) {
+            Log.d(TAG, "Ignored duplicate notification within 2.5s: $dedupeKey")
+            return
+        }
+        recentNotificationCache[dedupeKey] = now
 
         // Try to resolve contact phone number if title matches a contact name in phonebook
         val senderPhone = ContactUtil.getPhoneNumberByName(applicationContext, title)

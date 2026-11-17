@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.sp
 import com.notipass.droid.data.db.AppDatabase
 import com.notipass.droid.data.preference.AppPreferences
 import com.notipass.droid.data.storage.KakaoLogStorage
+import com.notipass.droid.engine.GeminiSummarizer
+import com.notipass.droid.engine.GeminiTestResult
 import com.notipass.droid.engine.GoogleDriveDispatcher
 import com.notipass.droid.engine.KakaoSummaryEngine
 import com.notipass.droid.engine.KakaoSummaryScheduler
@@ -64,6 +66,9 @@ fun KakaoSummaryScreen(
     var showDriveGuide by remember { mutableStateOf(false) }
     var isTestingDrive by remember { mutableStateOf(false) }
     var isRunningSummaryId by remember { mutableStateOf<Long?>(null) }
+    var isTestingGemini by remember { mutableStateOf(false) }
+    var geminiTestResult by remember { mutableStateOf<GeminiTestResult?>(null) }
+    var summaryResultDialog by remember { mutableStateOf<String?>(null) }
 
     val configs by db.kakaoSummaryDao().getAllConfigs().collectAsState(initial = emptyList())
 
@@ -188,6 +193,37 @@ fun KakaoSummaryScreen(
                                 }
                             ) {
                                 Text("Google AI Studio 열기")
+                            }
+                        }
+
+                        FilledTonalButton(
+                            onClick = {
+                                if (geminiApiKey.isBlank()) {
+                                    Toast.makeText(context, "API 키를 먼저 입력해주세요.", Toast.LENGTH_SHORT).show()
+                                    return@FilledTonalButton
+                                }
+                                isTestingGemini = true
+                                coroutineScope.launch {
+                                    val res = GeminiSummarizer.testApiKey(geminiApiKey)
+                                    isTestingGemini = false
+                                    geminiTestResult = res
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !isTestingGemini
+                        ) {
+                            if (isTestingGemini) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("연결 확인 및 지원 모델 탐색 중...")
+                            } else {
+                                Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Gemini API 연결 & 모델 자동 탐색 테스트", fontWeight = FontWeight.SemiBold)
                             }
                         }
 
@@ -437,9 +473,9 @@ fun KakaoSummaryScreen(
                                 val result = KakaoSummaryEngine.executeSummary(context, config, isManual = true)
                                 isRunningSummaryId = null
                                 if (result.isSuccess) {
-                                    Toast.makeText(context, "요약 완료: ${result.summary}", Toast.LENGTH_LONG).show()
+                                    summaryResultDialog = "🎉 [${config.roomName} 요약 완료]\n\n${result.summary}"
                                 } else {
-                                    Toast.makeText(context, "요약 실패: ${result.errorMessage}", Toast.LENGTH_LONG).show()
+                                    summaryResultDialog = "⚠️ [${config.roomName} 요약 실패]\n\n${result.errorMessage}\n\n💡 상단의 'Gemini API 연결 & 모델 자동 탐색 테스트' 버튼을 눌러 정확한 원인을 확인해보세요."
                                 }
                             }
                         }
@@ -480,6 +516,95 @@ fun KakaoSummaryScreen(
         RoomLogsDialog(
             roomName = roomName,
             onDismiss = { showLogsDialogForRoom = null }
+        )
+    }
+
+    // Gemini API Connection Test Dialog
+    geminiTestResult?.let { res ->
+        AlertDialog(
+            onDismissRequest = { geminiTestResult = null },
+            icon = {
+                Icon(
+                    if (res.isSuccess) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    tint = if (res.isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(36.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = if (res.isSuccess) "Gemini 연결 성공!" else "Gemini 연결 실패",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    if (res.isSuccess) {
+                        Text("✅ 현재 API 키로 AI 요약이 정상 작동합니다.", fontWeight = FontWeight.Bold)
+                        Text(
+                            "• 선택된 최적 모델: ${res.selectedModel}",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text("• 테스트 응답: \"${res.sampleResponse}\"", fontSize = 13.sp)
+                        if (res.availableModels.isNotEmpty()) {
+                            Text(
+                                "• 지원 모델 목록 (${res.availableModels.size}개):",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp
+                            )
+                            res.availableModels.take(6).forEach { m ->
+                                Text("  - $m", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
+                    } else {
+                        Text(
+                            "구글 AI API 호출 중 오류가 발생했습니다:",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(res.errorMessage ?: "알 수 없는 오류", fontSize = 13.sp)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        Text("💡 해결 가이드:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("1. aistudio.google.com 에 접속하여 API 키를 다시 생성하거나 복사해보세요.", fontSize = 11.sp)
+                        Text("2. API 키에 앞뒤 공백이나 특수문자가 섞이지 않았는지 확인해주세요.", fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { geminiTestResult = null }) {
+                    Text("확인")
+                }
+            }
+        )
+    }
+
+    // Manual Summary Result Dialog
+    summaryResultDialog?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { summaryResultDialog = null },
+            title = {
+                Text(
+                    text = if (msg.contains("완료")) "단톡방 AI 요약 결과" else "요약 안내",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(msg, fontSize = 14.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { summaryResultDialog = null }) {
+                    Text("확인")
+                }
+            }
         )
     }
 }

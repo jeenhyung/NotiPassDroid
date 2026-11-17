@@ -340,8 +340,8 @@ def main():
     print("=" * 60)
     print("종료하려면 Ctrl + C를 누르세요.")
 
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), ApkDownloadHandler) as httpd:
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    with socketserver.ThreadingTCPServer(("", PORT), ApkDownloadHandler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
