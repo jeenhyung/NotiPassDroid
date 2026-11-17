@@ -160,7 +160,13 @@ function dailyScheduleSummary() {
 }
 
 function requestGemini(apiKey, roomName, chatText) {
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
+  var endpoints = [
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=" + apiKey,
+    "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" + apiKey,
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey,
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey
+  ];
+
   var prompt = "당신은 카카오톡 단톡방 비서입니다. 아래는 '" + roomName + "' 단톡방의 최근 대화 내용입니다.\n" +
                "잡담을 제외하고 오늘 있었던 주요 약속, 일시, 장소, 결정된 안건, 공지사항을 1~3문장으로 간결하게 핵심 요약해주세요.\n\n" +
                chatText;
@@ -178,10 +184,16 @@ function requestGemini(apiKey, roomName, chatText) {
     muteHttpExceptions: true
   };
   
-  var response = UrlFetchApp.fetch(url, options);
-  var json = JSON.parse(response.getContentText());
-  if (json.candidates && json.candidates.length > 0) {
-    return json.candidates[0].content.parts[0].text.trim();
+  for (var i = 0; i < endpoints.length; i++) {
+    try {
+      var response = UrlFetchApp.fetch(endpoints[i], options);
+      var json = JSON.parse(response.getContentText());
+      if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts) {
+        return json.candidates[0].content.parts[0].text.trim();
+      }
+    } catch (e) {
+      Logger.log("Failed on endpoint " + endpoints[i] + ": " + e);
+    }
   }
   return null;
 }"""

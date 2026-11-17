@@ -20,7 +20,15 @@ data class GeminiResult(
 object GeminiSummarizer {
 
     private const val TAG = "GeminiSummarizer"
-    private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+
+    // Multi-model candidate list to seamlessly handle 404 / deprecation across v1 and v1beta
+    private val CANDIDATE_ENDPOINTS = listOf(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent",
+        "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent"
+    )
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -42,8 +50,6 @@ object GeminiSummarizer {
         }
 
         try {
-            val url = "$BASE_URL?key=$cleanKey"
-
             val prompt = """
 당신은 카카오톡 단톡방 AI 비서입니다.
 아래는 '$roomName' 단톡방에서 오간 대화 내용입니다.
@@ -70,39 +76,94 @@ $chatLogs
                     put(contentObj)
                 }
                 put("contents", contentsArray)
+
+                // Safety Settings: Prevent everyday Korean chat slang/banter from false-positive safety blocking
+                val safetyArray = JSONArray().apply {
+                    val categories = listOf(
+                        "HARM_CATEGORY_HARASSMENT",
+                        "HARM_CATEGORY_HATE_SPEECH",
+                        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "HARM_CATEGORY_DANGEROUS_CONTENT"
+                    )
+                    for (cat in categories) {
+                        put(JSONObject().apply {
+                            put("category", cat)
+                            put("threshold", "BLOCK_NONE")
+                        })
+                    }
+                }
+                put("safetySettings", safetyArray)
+
+                // Generation Config
+                val genConfig = JSONObject().apply {
+                    put("temperature", 0.2)
+                    put("maxOutputTokens", 800)
+                }
+                put("generationConfig", genConfig)
             }
 
             val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
             val requestBody = requestBodyJson.toString().toRequestBody(mediaType)
-            val request = Request.Builder()
-                .url(url)
-                .post(requestBody)
-                .build()
 
-            client.newCall(request).execute().use { response ->
-                val responseBodyStr = response.body?.string() ?: ""
-                if (!response.isSuccessful) {
-                    Log.e(TAG, "Gemini API error: ${response.code} $responseBodyStr")
-                    return@withContext GeminiResult(
-                        false,
-                        errorMessage = "Gemini 호출 실패 (HTTP ${response.code}): ${parseError(responseBodyStr)}"
-                    )
-                }
+            var lastError = "알 수 없는 오류"
 
-                val jsonResponse = JSONObject(responseBodyStr)
-                val candidates = jsonResponse.optJSONArray("candidates")
-                if (candidates != null && candidates.length() > 0) {
-                    val firstCandidate = candidates.getJSONObject(0)
-                    val content = firstCandidate.optJSONObject("content")
-                    val parts = content?.optJSONArray("parts")
-                    if (parts != null && parts.length() > 0) {
-                        val summaryText = parts.getJSONObject(0).optString("text", "").trim()
-                        return@withContext GeminiResult(true, summary = summaryText)
+            // Fallback loop through candidate endpoints
+            for (baseUrl in CANDIDATE_ENDPOINTS) {
+                val url = "$baseUrl?key=$cleanKey"
+                val request = Request.Builder()
+                    .url(url)
+                    .post(requestBody)
+                    .build()
+
+                try {
+                    client.newCall(request).execute().use { response ->
+                        val responseBodyStr = response.body?.string() ?: ""
+                        if (!response.isSuccessful) {
+                            Log.w(TAG, "Gemini endpoint $baseUrl failed with HTTP ${response.code}: $responseBodyStr")
+                            lastError = "Gemini 호출 실패 (HTTP ${response.code}): ${parseError(responseBodyStr)}"
+                            if (response.code == 404) {
+                                // 404 indicates this specific model or API version is not routed. Try next candidate!
+                                return@use
+                            } else {
+                                // 400 (Bad Request/Invalid Key) or 403 (Permission) means key problem, no need to retry
+                                return@withContext GeminiResult(false, errorMessage = lastError)
+                            }
+                        }
+
+                        val jsonResponse = JSONObject(responseBodyStr)
+                        val candidates = jsonResponse.optJSONArray("candidates")
+                        if (candidates != null && candidates.length() > 0) {
+                            val firstCandidate = candidates.getJSONObject(0)
+                            val finishReason = firstCandidate.optString("finishReason", "")
+                            val content = firstCandidate.optJSONObject("content")
+                            val parts = content?.optJSONArray("parts")
+                            if (parts != null && parts.length() > 0) {
+                                val summaryText = parts.getJSONObject(0).optString("text", "").trim()
+                                if (summaryText.isNotBlank()) {
+                                    Log.i(TAG, "Successfully generated summary using endpoint: $baseUrl")
+                                    return@withContext GeminiResult(true, summary = summaryText)
+                                }
+                            }
+                            if (finishReason.isNotBlank() && finishReason != "STOP") {
+                                return@withContext GeminiResult(false, errorMessage = "Gemini 생성 중단 (사유: $finishReason).")
+                            }
+                        }
+
+                        val promptFeedback = jsonResponse.optJSONObject("promptFeedback")
+                        val blockReason = promptFeedback?.optString("blockReason", "")
+                        if (!blockReason.isNullOrBlank()) {
+                            return@withContext GeminiResult(false, errorMessage = "Gemini 프롬프트 차단 (사유: $blockReason)")
+                        }
+
+                        lastError = "응답에서 요약 텍스트를 찾을 수 없습니다."
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Exception calling $baseUrl", e)
+                    lastError = "${e.javaClass.simpleName}: ${e.message}"
                 }
-
-                GeminiResult(false, errorMessage = "응답에서 요약 텍스트를 찾을 수 없습니다.")
             }
+
+            GeminiResult(false, errorMessage = lastError)
         } catch (e: Exception) {
             Log.e(TAG, "Exception during Gemini summary", e)
             GeminiResult(false, errorMessage = "${e.javaClass.simpleName}: ${e.message}")
@@ -113,7 +174,18 @@ $chatLogs
         return try {
             val json = JSONObject(responseStr)
             val error = json.optJSONObject("error")
-            error?.optString("message", responseStr) ?: responseStr.take(150)
+            val status = error?.optString("status", "") ?: ""
+            val message = error?.optString("message", "") ?: responseStr.take(150)
+
+            when {
+                status == "INVALID_ARGUMENT" || message.contains("API key not valid", ignoreCase = true) ->
+                    "API 키가 올바르지 않습니다. Google AI Studio(aistudio.google.com)에서 발급받은 키인지 확인해주세요."
+                status == "PERMISSION_DENIED" || message.contains("permission", ignoreCase = true) ->
+                    "권한 오류(403): API 키에 'Generative Language API' 접근 권한이 없거나 제한된 키입니다."
+                status == "RESOURCE_EXHAUSTED" || message.contains("quota", ignoreCase = true) ->
+                    "할당량 초과(429): 무료 요청 한도에 도달했습니다. 잠시 후 다시 시도해주세요."
+                else -> message
+            }
         } catch (_: Exception) {
             responseStr.take(150)
         }
