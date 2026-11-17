@@ -46,8 +46,14 @@ object KakaoSummaryEngine {
             return@withContext GeminiResult(false, errorMessage = err)
         }
 
-        // Call Gemini
-        val result = GeminiSummarizer.summarize(apiKey, roomName, rawLogs)
+        // Call Gemini with message count and configured summary style
+        val result = GeminiSummarizer.summarize(
+            apiKey = apiKey,
+            roomName = roomName,
+            chatLogs = rawLogs,
+            messageCount = messageCount,
+            style = config.summaryStyle
+        )
         val db = AppDatabase.getDatabase(context)
 
         if (result.isSuccess && !result.summary.isNullOrBlank()) {
@@ -56,7 +62,7 @@ object KakaoSummaryEngine {
 
             // 1. Deliver to Local Notification
             if (config.deliveryType == SummaryDeliveryType.LOCAL_NOTIFICATION || config.deliveryType == SummaryDeliveryType.ALL) {
-                postLocalNotification(context, roomName, "$summaryText (총 ${messageCount}개 대화)")
+                postLocalNotification(context, roomName, summaryText)
             }
 
             // 2. Deliver via SMS (Self or Target)

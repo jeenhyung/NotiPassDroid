@@ -2,6 +2,7 @@ package com.notipass.droid.engine
 
 import android.util.Log
 import com.notipass.droid.data.storage.KakaoLogStorage
+import com.notipass.droid.model.SummaryStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -45,8 +46,8 @@ object GeminiSummarizer {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .writeTimeout(35, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -164,7 +165,7 @@ object GeminiSummarizer {
 
         // 2. Test generation with short prompt
         val testPrompt = "카카오톡 AI 요약 비서 연동 테스트입니다. '연결 성공'이라고 1단어로만 짧게 응답하세요."
-        val genResult = executeGenerateContent(cleanKey, bestModel, testPrompt)
+        val genResult = executeGenerateContent(cleanKey, bestModel, testPrompt, maxTokens = 50)
 
         if (genResult.isSuccess && !genResult.summary.isNullOrBlank()) {
             cachedWorkingModel = bestModel
@@ -184,10 +185,107 @@ object GeminiSummarizer {
         }
     }
 
+    /**
+     * Dynamically construct prompt and token limit based on conversation volume and chosen style.
+     */
+    fun buildPrompt(
+        roomName: String,
+        sanitizedLogs: String,
+        effectiveCount: Int,
+        style: SummaryStyle
+    ): Pair<String, Int> {
+        return when (style) {
+            SummaryStyle.REPORT -> {
+                val prompt = """
+당신은 대한민국 최고 수준의 비즈니스 커뮤니케이션 & 대화 분석 전문 AI 비서입니다.
+아래는 '$roomName' 카카오톡 단톡방에서 수집된 실제 대화 내용(총 ${effectiveCount}개 메시지)입니다.
+
+사용자의 요구사항:
+"수집된 대화량이 많으므로, 단편적인 1~2줄 요약이 아니라, 대화에 참여하지 않은 사람도 모든 맥락과 핵심을 완벽히 파악할 수 있도록 **체계적인 고품질 [단톡방 대화 분석 종합 보고서]**를 작성해 주세요."
+
+[작성 및 분석 원칙]:
+1. **잡담/노이즈 완벽 제거**: 단순 인사("안녕하세요", "수고하세요"), 감정 표현/이모티콘, 단순 맞장구("네", "ㅋㅋ", "ㅎㅎ", "ㅇㅇ", "감사합니다")는 과감하게 제외하세요.
+2. **풍부한 디테일과 맥락 보존**: 중요한 안건, 의견 교환의 배경, 논의된 대안, 구체적인 수치/금액/장소/날짜, 누가 어떤 의견을 냈는지를 축약하거나 생략하지 말고 **자세하고 충실하게** 서술하세요.
+3. **가독성 높은 구조화**: 마크다운 제목, 불릿 포인트, 볼드체 등을 활용하여 한눈에 들어오게 정리하세요.
+
+[보고서 출력 양식]:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 [단톡방 대화 분석 종합 보고서: $roomName]
+• 분석 대화량: 총 ${effectiveCount}개 메시지
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 1. 핵심 총괄 브리핑 (Executive Summary)
+- 전체 대화의 핵심 주제와 가장 중요한 결과를 2~3개 문장으로 압축하여 종합 브리핑합니다.
+
+💡 2. 주요 안건별 상세 논의 및 진행 경과
+- 대화에서 다룬 핵심 주제들을 [주제명] 단위로 분류하여, 각 안건의 발생 배경, 주요 발언자들의 의견, 주고받은 논의 과정을 구체적으로 기술합니다.
+  (예: [프로젝트 일정 조율], [결제 모듈 버그 수정], [주말 모임 장소 선정] 등)
+
+🎯 3. 최종 결정 및 합의 사항
+- 대화를 통해 최종 합의되거나 확정된 결정 사항들을 명확히 정리합니다.
+
+⏰ 4. 일정 · 약속 및 액션 아이템 (Who, When, Where, What)
+- 일시, 장소, 담당자, 수행해야 할 과제 등을 명확한 체크리스트 형태로 정리합니다.
+  (해당 사항이 없는 경우 '특이 일정 없음' 표기)
+
+❓ 5. 미해결 과제 및 추가 확인 필요 사항
+- 대화 중 거론되었으나 결론이 나지 않은 질문, 추가 확인이나 의사결정이 필요한 사항들을 정리합니다.
+  (해당 사항이 없는 경우 생략 가능)
+
+(답변에 '보고서 내용입니다' 같은 불필요한 사족을 달지 말고 위의 보고서 본문만 바로 출력하세요.)
+
+[대화 내용]:
+$sanitizedLogs
+                """.trimIndent()
+                Pair(prompt, 3500)
+            }
+
+            SummaryStyle.AUTO -> {
+                val prompt = """
+당신은 카카오톡 단톡방 전문 AI 비서입니다.
+아래는 '$roomName' 단톡방에서 오간 대화 내용(총 ${effectiveCount}개 메시지)입니다.
+불필요한 잡담(ㅋㅋ, ㅎㅎ, 단순 맞장구 등)은 제외하되, 대화의 전반적인 맥락과 세부 정보가 충실히 전달될 수 있도록 아래의 양식에 맞추어 체계적으로 요약해 주세요:
+
+📋 [$roomName 대화 핵심 요약] (총 ${effectiveCount}개 대화)
+
+📌 1. 핵심 브리핑
+- 대화의 전체 요지와 결론을 2~3문장으로 요약합니다.
+
+💬 2. 주요 논의 및 전달 사항
+- 나눈 대화의 주요 내용을 주제별로 분류하여 구체적인 내용과 함께 정리합니다.
+
+🎯 3. 결정 사항 및 약속/일정
+- 정해진 약속(일시/장소)이나 할 일, 확정된 사항을 정리합니다. (없을 시 '특이 일정 없음' 표기)
+
+(사족 없이 본문만 바로 출력하세요.)
+
+[대화 내용]:
+$sanitizedLogs
+                """.trimIndent()
+                Pair(prompt, 1800)
+            }
+
+            SummaryStyle.BRIEF -> {
+                val prompt = """
+당신은 카카오톡 단톡방 AI 비서입니다.
+아래는 '$roomName' 단톡방에서 오간 짧은 대화 내용(총 ${effectiveCount}개)입니다.
+불필요한 인사나 리액션은 제외하고, 핵심 용건과 주요 내용을 2~4개 불릿 포인트 또는 간결한 문장으로 명확하게 요약해 주세요.
+(사족 없이 요약 내용만 바로 출력하세요.)
+
+[대화 내용]:
+$sanitizedLogs
+                """.trimIndent()
+                Pair(prompt, 900)
+            }
+        }
+    }
+
     suspend fun summarize(
         apiKey: String,
         roomName: String,
-        chatLogs: String
+        chatLogs: String,
+        messageCount: Int = 0,
+        style: SummaryStyle = SummaryStyle.AUTO
     ): GeminiResult = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim().removePrefix("Bearer ").trim()
         if (cleanKey.isBlank()) {
@@ -200,21 +298,26 @@ object GeminiSummarizer {
             return@withContext GeminiResult(false, errorMessage = "요약할 대화 내용이 없습니다.")
         }
 
-        val prompt = """
-당신은 카카오톡 단톡방 AI 비서입니다.
-아래는 '$roomName' 단톡방에서 오간 대화 내용입니다.
-불필요한 인사나 잡담(ㅋㅋ, 이모티콘, 단순 맞장구 등)은 모두 제외하고,
-주요 공지사항, 결정된 약속(일시/장소), 중요한 질문과 답변, 핵심 전달 사항 위주로
-한국어 1~3문장으로 간결하게 핵심만 요약해 주세요.
-(답변에 '요약 결과입니다:' 같은 사족을 붙이지 말고 요약 내용만 바로 출력하세요.)
+        val effectiveCount = if (messageCount > 0) messageCount else sanitizedLogs.lines().count { it.isNotBlank() }
 
-[대화 내용]:
-$sanitizedLogs
-        """.trimIndent()
+        // Determine effective style
+        val effectiveStyle = when (style) {
+            SummaryStyle.REPORT -> SummaryStyle.REPORT
+            SummaryStyle.BRIEF -> SummaryStyle.BRIEF
+            SummaryStyle.AUTO -> {
+                when {
+                    effectiveCount >= 25 || sanitizedLogs.length >= 800 -> SummaryStyle.REPORT
+                    effectiveCount >= 10 || sanitizedLogs.length >= 250 -> SummaryStyle.AUTO
+                    else -> SummaryStyle.BRIEF
+                }
+            }
+        }
+
+        val (prompt, maxTokens) = buildPrompt(roomName, sanitizedLogs, effectiveCount, effectiveStyle)
 
         // 1. Try cached working model first if available
         cachedWorkingModel?.let { model ->
-            val result = executeGenerateContent(cleanKey, model, prompt)
+            val result = executeGenerateContent(cleanKey, model, prompt, maxTokens)
             if (result.isSuccess) {
                 return@withContext result
             }
@@ -249,7 +352,7 @@ $sanitizedLogs
 
         // 3. Try candidates in order
         for (model in modelsToTry) {
-            val result = executeGenerateContent(cleanKey, model, prompt)
+            val result = executeGenerateContent(cleanKey, model, prompt, maxTokens)
             if (result.isSuccess) {
                 cachedWorkingModel = model
                 return@withContext result
@@ -267,7 +370,8 @@ $sanitizedLogs
     private fun executeGenerateContent(
         cleanKey: String,
         modelName: String,
-        prompt: String
+        prompt: String,
+        maxTokens: Int = 2000
     ): GeminiResult {
         val safeModel = if (modelName.startsWith("models/")) modelName else "models/$modelName"
         val requestBodyJson = JSONObject().apply {
@@ -287,7 +391,7 @@ $sanitizedLogs
 
             val genConfig = JSONObject().apply {
                 put("temperature", 0.2)
-                put("maxOutputTokens", 800)
+                put("maxOutputTokens", maxTokens)
             }
             put("generationConfig", genConfig)
         }
@@ -335,7 +439,7 @@ $sanitizedLogs
                         if (parts != null && parts.length() > 0) {
                             val summaryText = parts.getJSONObject(0).optString("text", "").trim()
                             if (summaryText.isNotBlank()) {
-                                Log.i(TAG, "Successfully generated content using $safeModel")
+                                Log.i(TAG, "Successfully generated content using $safeModel ($maxTokens tokens limit)")
                                 return GeminiResult(true, summary = summaryText, usedModel = safeModel)
                             }
                         }

@@ -37,6 +37,7 @@ import com.notipass.droid.engine.KakaoSummaryEngine
 import com.notipass.droid.engine.KakaoSummaryScheduler
 import com.notipass.droid.model.KakaoSummaryConfig
 import com.notipass.droid.model.SummaryDeliveryType
+import com.notipass.droid.model.SummaryStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -601,8 +602,18 @@ fun KakaoSummaryScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { summaryResultDialog = null }) {
-                    Text("확인")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        clipboardManager.setText(AnnotatedString(msg))
+                        Toast.makeText(context, "요약 내용이 클립보드에 복사되었습니다.", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("내용 복사")
+                    }
+                    Button(onClick = { summaryResultDialog = null }) {
+                        Text("확인")
+                    }
                 }
             }
         )
@@ -685,6 +696,18 @@ fun RoomConfigCard(
                     SummaryDeliveryType.ALL -> "알림+문자 모두"
                 }
                 BadgeChip(text = "수신: $deliveryText", color = Color(0xFFE3F2FD), textColor = Color(0xFF1565C0))
+
+                when (config.summaryStyle) {
+                    SummaryStyle.REPORT -> {
+                        BadgeChip(text = "📑 상세 보고서", color = Color(0xFFE0F7FA), textColor = Color(0xFF006064))
+                    }
+                    SummaryStyle.BRIEF -> {
+                        BadgeChip(text = "⚡ 간결형", color = Color(0xFFFFF3E0), textColor = Color(0xFFE65100))
+                    }
+                    SummaryStyle.AUTO -> {
+                        BadgeChip(text = "🔄 자동 맞춤형", color = Color(0xFFEDE7F6), textColor = Color(0xFF4A148C))
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -787,6 +810,7 @@ fun RoomConfigEditDialog(
     var scheduledMinute by remember { mutableStateOf(initialConfig?.scheduledMinute ?: 0) }
     var deliveryType by remember { mutableStateOf(initialConfig?.deliveryType ?: SummaryDeliveryType.SELF_SMS) }
     var targetSmsNumber by remember { mutableStateOf(initialConfig?.targetSmsNumber ?: "") }
+    var summaryStyle by remember { mutableStateOf(initialConfig?.summaryStyle ?: SummaryStyle.AUTO) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -885,6 +909,30 @@ fun RoomConfigEditDialog(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
 
+                Text("요약 스타일 (보고서 / 간결형)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    StyleOptionRow(
+                        title = "🔄 자동 맞춤형 (기본 추천)",
+                        subtitle = "대화량이 많으면 심층 보고서, 적으면 핵심 요약으로 자동 조절",
+                        selected = summaryStyle == SummaryStyle.AUTO,
+                        onSelect = { summaryStyle = SummaryStyle.AUTO }
+                    )
+                    StyleOptionRow(
+                        title = "📑 상세 보고서형 (Executive Report)",
+                        subtitle = "안건/논의과정/결정사항/일정/미해결 과제까지 충실하고 풍부하게 작성",
+                        selected = summaryStyle == SummaryStyle.REPORT,
+                        onSelect = { summaryStyle = SummaryStyle.REPORT }
+                    )
+                    StyleOptionRow(
+                        title = "⚡ 간결형 (Quick Brief)",
+                        subtitle = "바쁜 일상을 위해 2~3줄 핵심 위주로 빠르게 요약",
+                        selected = summaryStyle == SummaryStyle.BRIEF,
+                        onSelect = { summaryStyle = SummaryStyle.BRIEF }
+                    )
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
                 Text("요약 결과 받을 곳", fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -938,7 +986,8 @@ fun RoomConfigEditDialog(
                         targetSmsNumber = targetSmsNumber.trim(),
                         isScheduledTimeEnabled = isScheduledTimeEnabled,
                         scheduledHour = scheduledHour,
-                        scheduledMinute = scheduledMinute
+                        scheduledMinute = scheduledMinute,
+                        summaryStyle = summaryStyle
                     ) ?: KakaoSummaryConfig(
                         roomName = roomName.trim(),
                         dismissNotification = dismissNotification,
@@ -947,7 +996,8 @@ fun RoomConfigEditDialog(
                         targetSmsNumber = targetSmsNumber.trim(),
                         isScheduledTimeEnabled = isScheduledTimeEnabled,
                         scheduledHour = scheduledHour,
-                        scheduledMinute = scheduledMinute
+                        scheduledMinute = scheduledMinute,
+                        summaryStyle = summaryStyle
                     )
                     onSave(configToSave)
                 }
@@ -975,6 +1025,24 @@ fun DeliveryOptionRow(title: String, selected: Boolean, onSelect: () -> Unit) {
         RadioButton(selected = selected, onClick = onSelect)
         Spacer(modifier = Modifier.width(6.dp))
         Text(text = title, fontSize = 13.sp)
+    }
+}
+
+@Composable
+fun StyleOptionRow(title: String, subtitle: String, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect)
+            .padding(vertical = 4.dp)
+    ) {
+        RadioButton(selected = selected, onClick = onSelect)
+        Spacer(modifier = Modifier.width(6.dp))
+        Column {
+            Text(text = title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(text = subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+        }
     }
 }
 
