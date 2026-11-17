@@ -21,12 +21,13 @@ object GeminiSummarizer {
 
     private const val TAG = "GeminiSummarizer"
 
-    // Multi-model candidate list to seamlessly handle 404 / deprecation across v1 and v1beta
+    // Stable v1 endpoints first, followed by v1beta / latest fallbacks
     private val CANDIDATE_ENDPOINTS = listOf(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent",
         "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent",
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
         "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent"
     )
 
