@@ -1102,36 +1102,42 @@ fun AppSummaryHistoryDialog(
     }
 }
 
+private val appIconCache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(150)
+
 @Composable
 fun AppIconImage(packageName: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    var drawable by remember(packageName) { mutableStateOf<Drawable?>(null) }
+    var imageBitmap by remember(packageName) { mutableStateOf(appIconCache.get(packageName)) }
 
     LaunchedEffect(packageName) {
-        withContext(Dispatchers.IO) {
-            drawable = try {
-                context.packageManager.getApplicationIcon(packageName)
-            } catch (_: Exception) {
-                null
+        if (imageBitmap == null) {
+            withContext(Dispatchers.IO) {
+                val cached = appIconCache.get(packageName)
+                if (cached != null) {
+                    imageBitmap = cached
+                } else {
+                    try {
+                        val d = context.packageManager.getApplicationIcon(packageName)
+                        val w = d.intrinsicWidth.coerceAtLeast(1)
+                        val h = d.intrinsicHeight.coerceAtLeast(1)
+                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        val canvas = Canvas(bmp)
+                        d.setBounds(0, 0, canvas.width, canvas.height)
+                        d.draw(canvas)
+                        val converted = bmp.asImageBitmap()
+                        appIconCache.put(packageName, converted)
+                        imageBitmap = converted
+                    } catch (_: Exception) {
+                        // ignore
+                    }
+                }
             }
         }
     }
 
-    if (drawable != null) {
-        val bitmap = remember(drawable) {
-            val d = drawable!!
-            val bmp = Bitmap.createBitmap(
-                d.intrinsicWidth.coerceAtLeast(1),
-                d.intrinsicHeight.coerceAtLeast(1),
-                Bitmap.Config.ARGB_8888
-            )
-            val canvas = Canvas(bmp)
-            d.setBounds(0, 0, canvas.width, canvas.height)
-            d.draw(canvas)
-            bmp.asImageBitmap()
-        }
+    if (imageBitmap != null) {
         Image(
-            bitmap = bitmap,
+            bitmap = imageBitmap!!,
             contentDescription = null,
             modifier = modifier
         )
