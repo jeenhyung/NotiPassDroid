@@ -3,6 +3,7 @@ package com.notipass.droid.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -519,6 +520,7 @@ fun KakaoSummaryScreen(
                             coroutineScope.launch {
                                 db.kakaoSummaryDao().setConfigEnabled(config.id, enabled)
                                 KakaoSummaryScheduler.schedule(context, config.copy(isEnabled = enabled))
+                                NotificationPassService.refreshDismissRoomsCache(context)
                             }
                         },
                         onEdit = {
@@ -589,6 +591,7 @@ fun KakaoSummaryScreen(
                         newConfig
                     }
                     KakaoSummaryScheduler.schedule(context, savedConfig)
+                    NotificationPassService.refreshDismissRoomsCache(context)
                     Toast.makeText(context, "'${savedConfig.roomName}' 설정이 저장되었습니다.", Toast.LENGTH_SHORT).show()
                     showAddEditDialog = false
                 }
@@ -779,6 +782,8 @@ fun RoomConfigCard(
             ) {
                 if (config.dismissNotification) {
                     BadgeChip(text = "🔕 상단바 알림 자동 숨김", color = Color(0xFFFFEBEE), textColor = Color(0xFFC62828))
+                } else {
+                    BadgeChip(text = "🔔 상단바 알림 유지", color = Color(0xFFE8F5E9), textColor = Color(0xFF2E7D32))
                 }
                 if (config.isScheduledTimeEnabled) {
                     val amPm = if (config.scheduledHour < 12) "오전" else "오후"
@@ -924,7 +929,7 @@ fun RoomConfigEditDialog(
 ) {
     val context = LocalContext.current
     var roomName by remember { mutableStateOf(initialConfig?.roomName ?: "") }
-    var dismissNotification by remember { mutableStateOf(initialConfig?.dismissNotification ?: true) }
+    var dismissNotification by remember { mutableStateOf(initialConfig?.dismissNotification ?: false) }
     var thresholdCountText by remember { mutableStateOf((initialConfig?.summaryThresholdCount ?: 30).toString()) }
     var isScheduledTimeEnabled by remember { mutableStateOf(initialConfig?.isScheduledTimeEnabled ?: false) }
     var scheduledHour by remember { mutableStateOf(initialConfig?.scheduledHour ?: 21) }
@@ -952,20 +957,58 @@ fun RoomConfigEditDialog(
                     singleLine = true
                 )
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { dismissNotification = !dismissNotification }
-                ) {
-                    Checkbox(
-                        checked = dismissNotification,
-                        onCheckedChange = { dismissNotification = it }
+                // Status bar notification behavior section
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "수집 후 스마트폰 상단바 알림 처리",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Column {
-                        Text("상단바 알림 자동 숨김 (추천)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("메시지가 와도 소리/진동을 울리지 않고 상단바에서 즉시 지웁니다.", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Option 1: Keep notification (알림 유지)
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { dismissNotification = false },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (!dismissNotification) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            ),
+                            border = if (!dismissNotification) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("🔔 알림 유지 (추천)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (!dismissNotification) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("상단바에 알림 남김\n(소리/진동 유지)", fontSize = 11.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
+
+                        // Option 2: Dismiss notification (알림 삭제/숨김)
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { dismissNotification = true },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (dismissNotification) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            ),
+                            border = if (dismissNotification) BorderStroke(1.5.dp, MaterialTheme.colorScheme.error) else null,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("🔕 알림 즉시 삭제", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (dismissNotification) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("상단바에서 즉시 지움\n(소음/진동 차단)", fontSize = 11.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
                     }
                 }
 

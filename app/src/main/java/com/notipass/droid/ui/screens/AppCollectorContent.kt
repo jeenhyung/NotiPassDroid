@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -191,6 +192,7 @@ fun AppCollectorTabContent(
                         coroutineScope.launch {
                             db.appCollectorDao().setConfigEnabled(config.id, enabled)
                             AppSummaryScheduler.schedule(context, config.copy(isEnabled = enabled))
+                            NotificationPassService.refreshCollectorCache(context)
                         }
                     },
                     onEdit = {
@@ -202,6 +204,7 @@ fun AppCollectorTabContent(
                             AppSummaryScheduler.cancel(context, config.id)
                             db.appCollectorDao().deleteConfig(config)
                             db.appCollectorDao().clearNotificationsByPackage(config.packageName)
+                            NotificationPassService.refreshCollectorCache(context)
                             Toast.makeText(context, "${config.appName} 설정이 삭제되었습니다.", Toast.LENGTH_SHORT).show()
                         }
                     },
@@ -275,6 +278,7 @@ fun AppCollectorTabContent(
                         newConfig
                     }
                     AppSummaryScheduler.schedule(context, savedConfig)
+                    NotificationPassService.refreshCollectorCache(context)
                     Toast.makeText(context, "'${savedConfig.appName}' 알림 수집 설정이 저장되었습니다.", Toast.LENGTH_SHORT).show()
                     showEditDialog = false
                 }
@@ -553,21 +557,58 @@ fun AppCollectorConfigEditDialog(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
 
-                // Dismiss notification toggle
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { dismissNotification = !dismissNotification }
-                ) {
-                    Checkbox(
-                        checked = dismissNotification,
-                        onCheckedChange = { dismissNotification = it }
+                // Status bar notification behavior section
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "수집 후 스마트폰 상단바 알림 처리",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Column {
-                        Text("상단바 알림 즉시 숨김", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("알림이 올 때 소리/진동을 울리지 않고 상단바에서 즉시 지웁니다 (체크 해제 시 원래대로 알림 유지).", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Option 1: Keep notification (알림 유지)
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { dismissNotification = false },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (!dismissNotification) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            ),
+                            border = if (!dismissNotification) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("🔔 알림 유지 (추천)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (!dismissNotification) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("상단바에 알림 남김\n(소리/진동 유지)", fontSize = 11.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
+
+                        // Option 2: Dismiss notification (알림 삭제/숨김)
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { dismissNotification = true },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (dismissNotification) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            ),
+                            border = if (dismissNotification) BorderStroke(1.5.dp, MaterialTheme.colorScheme.error) else null,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("🔕 알림 즉시 삭제", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (dismissNotification) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("상단바에서 즉시 지움\n(소음/진동 차단)", fontSize = 11.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
                     }
                 }
 

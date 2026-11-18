@@ -15,7 +15,7 @@ data class KakaoSummaryConfig(
     val id: Long = 0,
     val roomName: String,
     val isEnabled: Boolean = true,
-    val dismissNotification: Boolean = true, // 단톡방 알림 상단바에서 즉시 지우기 (소리/진동 차단)
+    val dismissNotification: Boolean = false, // 기본값: false (상단바 알림 유지)
     val summaryThresholdCount: Int = 30,     // 대화 N개 누적 시 자동 요약 (0이면 수동 전용)
     val deliveryType: SummaryDeliveryType = SummaryDeliveryType.SELF_SMS,
     val targetSmsNumber: String = "",        // 빈값이면 AppPreferences의 내 번호 사용
