@@ -1,5 +1,6 @@
 package com.notipass.droid
 
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -42,8 +43,11 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "MainActivity"
     }
 
+    private var initialTargetRoom by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleNotificationIntent(intent)
 
         var initError: Throwable? = null
         val db: AppDatabase? = try {
@@ -68,18 +72,45 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 } else {
-                    AppNavigation(db = db)
+                    AppNavigation(db = db, initialTargetRoom = initialTargetRoom)
                 }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("EXTRA_NAVIGATE_SUMMARY_HISTORY", false) == true) {
+            val room = intent.getStringExtra("EXTRA_ROOM_NAME")
+            if (!room.isNullOrBlank()) {
+                initialTargetRoom = room
+                Log.i(TAG, "Navigating to summary history for room: $room")
             }
         }
     }
 }
 
 @Composable
-fun AppNavigation(db: AppDatabase) {
+fun AppNavigation(
+    db: AppDatabase,
+    initialTargetRoom: String? = null
+) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
+
+    LaunchedEffect(initialTargetRoom) {
+        if (!initialTargetRoom.isNullOrBlank()) {
+            navController.navigate("kakao_summary") {
+                popUpTo("home")
+            }
+        }
+    }
 
     val isEditRoute = currentRoute?.startsWith("rule_edit") == true
 
@@ -154,7 +185,7 @@ fun AppNavigation(db: AppDatabase) {
                 )
             }
             composable("kakao_summary") {
-                KakaoSummaryScreen(db = db)
+                KakaoSummaryScreen(db = db, initialTargetRoom = initialTargetRoom)
             }
             composable(
                 route = "rule_edit/{ruleId}",

@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.notipass.droid.data.db.AppDatabase
@@ -36,8 +37,10 @@ import com.notipass.droid.engine.GoogleDriveDispatcher
 import com.notipass.droid.engine.KakaoSummaryEngine
 import com.notipass.droid.engine.KakaoSummaryScheduler
 import com.notipass.droid.model.KakaoSummaryConfig
+import com.notipass.droid.model.KakaoSummaryRecord
 import com.notipass.droid.model.SummaryDeliveryType
 import com.notipass.droid.model.SummaryStyle
+import com.notipass.droid.service.NotificationPassService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,7 +51,8 @@ import java.util.*
 @Composable
 fun KakaoSummaryScreen(
     db: AppDatabase,
-    onNavigateBack: (() -> Unit)? = null
+    onNavigateBack: (() -> Unit)? = null,
+    initialTargetRoom: String? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -64,6 +68,8 @@ fun KakaoSummaryScreen(
     var showAddEditDialog by remember { mutableStateOf(false) }
     var editingConfig by remember { mutableStateOf<KakaoSummaryConfig?>(null) }
     var showLogsDialogForRoom by remember { mutableStateOf<String?>(null) }
+    var showSummaryHistoryForRoom by remember { mutableStateOf(initialTargetRoom) }
+    var showWatchGuideDialog by remember { mutableStateOf(false) }
     var showDriveGuide by remember { mutableStateOf(false) }
     var isTestingDrive by remember { mutableStateOf(false) }
     var isRunningSummaryId by remember { mutableStateOf<Long?>(null) }
@@ -71,7 +77,23 @@ fun KakaoSummaryScreen(
     var geminiTestResult by remember { mutableStateOf<GeminiTestResult?>(null) }
     var summaryResultDialog by remember { mutableStateOf<String?>(null) }
 
+    LaunchedEffect(initialTargetRoom) {
+        if (!initialTargetRoom.isNullOrBlank()) {
+            showSummaryHistoryForRoom = initialTargetRoom
+        }
+    }
+
     val configs by db.kakaoSummaryDao().getAllConfigs().collectAsState(initial = emptyList())
+
+    // Keep NotificationPassService dismiss cache in sync with enabled configs
+    LaunchedEffect(configs) {
+        val dismissRooms = configs
+            .filter { it.isEnabled && it.dismissNotification }
+            .map { it.roomName.trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+        NotificationPassService.updateDismissRoomsCache(dismissRooms)
+    }
 
     Scaffold(
         topBar = {
@@ -136,10 +158,21 @@ fun KakaoSummaryScreen(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "수백 개의 잡담 메시지 알림(소리/진동)을 상단바에서 즉시 숨기고, 텍스트로 보관하다가 핵심만 AI가 1~3문장으로 간결하게 요약해 드립니다.",
+                            text = "수백 개의 잡담 메시지 알림(소리/진동)을 상단바에서 즉시 숨기고, 텍스트로 보관하다가 핵심만 AI가 체계적인 보고서와 요약으로 정리해 드립니다.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { showWatchGuideDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Icon(Icons.Default.NotificationsOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("⌚ 갤럭시 워치 카톡 알림 완벽 차단 가이드", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }
@@ -442,6 +475,7 @@ fun KakaoSummaryScreen(
                 items(configs, key = { it.id }) { config ->
                     RoomConfigCard(
                         config = config,
+                        db = db,
                         isRunning = isRunningSummaryId == config.id,
                         onToggleEnabled = { enabled ->
                             coroutineScope.launch {
@@ -463,6 +497,9 @@ fun KakaoSummaryScreen(
                         },
                         onViewLogs = {
                             showLogsDialogForRoom = config.roomName
+                        },
+                        onViewHistory = {
+                            showSummaryHistoryForRoom = config.roomName
                         },
                         onRunSummaryNow = {
                             if (geminiApiKey.isBlank()) {
@@ -618,20 +655,37 @@ fun KakaoSummaryScreen(
             }
         )
     }
+
+    // Summary History Dialog
+    showSummaryHistoryForRoom?.let { roomName ->
+        RoomSummaryHistoryDialog(
+            roomName = roomName,
+            db = db,
+            onDismiss = { showSummaryHistoryForRoom = null }
+        )
+    }
+
+    // Galaxy Watch Notification Suppression Guide Dialog
+    if (showWatchGuideDialog) {
+        GalaxyWatchGuideDialog(onDismiss = { showWatchGuideDialog = false })
+    }
 }
 
 @Composable
 fun RoomConfigCard(
     config: KakaoSummaryConfig,
+    db: AppDatabase,
     isRunning: Boolean,
     onToggleEnabled: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onViewLogs: () -> Unit,
+    onViewHistory: () -> Unit,
     onRunSummaryNow: () -> Unit
 ) {
     val context = LocalContext.current
     var currentCount by remember { mutableStateOf(0) }
+    val historyCount by db.kakaoSummaryDao().getSummaryCountByRoom(config.roomName).collectAsState(initial = 0)
     val timeFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
     LaunchedEffect(config.roomName) {
@@ -694,6 +748,7 @@ fun RoomConfigCard(
                     SummaryDeliveryType.LOCAL_NOTIFICATION -> "상단바 알림"
                     SummaryDeliveryType.TARGET_SMS -> "지정 번호 SMS"
                     SummaryDeliveryType.ALL -> "알림+문자 모두"
+                    SummaryDeliveryType.NONE -> "발송 안 함(앱내보관)"
                 }
                 BadgeChip(text = "수신: $deliveryText", color = Color(0xFFE3F2FD), textColor = Color(0xFF1565C0))
 
@@ -759,20 +814,39 @@ fun RoomConfigCard(
                     }
                 }
 
+                FilledTonalButton(
+                    onClick = onViewHistory,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.HistoryEdu, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (historyCount > 0) "요약 기록 ($historyCount)" else "요약 기록")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 OutlinedButton(
                     onClick = onViewLogs
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Article, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("대화록")
+                    Text("대화 원본")
                 }
 
-                IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = "수정", tint = MaterialTheme.colorScheme.primary)
-                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(onClick = onEdit) {
+                        Icon(Icons.Default.Edit, contentDescription = "수정", tint = MaterialTheme.colorScheme.primary)
+                    }
 
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = "삭제", tint = MaterialTheme.colorScheme.error)
+                    IconButton(onClick = onDelete) {
+                        Icon(Icons.Default.Delete, contentDescription = "삭제", tint = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
         }
@@ -942,7 +1016,7 @@ fun RoomConfigEditDialog(
                         onSelect = { deliveryType = SummaryDeliveryType.SELF_SMS }
                     )
                     DeliveryOptionRow(
-                        title = "내 폰 상단바 알림만 띄우기",
+                        title = "내 폰 상단바 알림만 띄우기 (클릭 시 앱에서 기록 확인)",
                         selected = deliveryType == SummaryDeliveryType.LOCAL_NOTIFICATION,
                         onSelect = { deliveryType = SummaryDeliveryType.LOCAL_NOTIFICATION }
                     )
@@ -955,6 +1029,11 @@ fun RoomConfigEditDialog(
                         title = "상단바 알림 + 문자(SMS) 모두",
                         selected = deliveryType == SummaryDeliveryType.ALL,
                         onSelect = { deliveryType = SummaryDeliveryType.ALL }
+                    )
+                    DeliveryOptionRow(
+                        title = "없음 (발송 안 함 - 앱 내 요약 기록 및 드라이브 전용)",
+                        selected = deliveryType == SummaryDeliveryType.NONE,
+                        onSelect = { deliveryType = SummaryDeliveryType.NONE }
                     )
                 }
 
@@ -1094,6 +1173,268 @@ fun RoomLogsDialog(roomName: String, onDismiss: () -> Unit) {
                 }
             ) {
                 Text("대화록 비우기", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    )
+}
+
+@Composable
+fun RoomSummaryHistoryDialog(
+    roomName: String,
+    db: AppDatabase,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+    val timeFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
+    val records by db.kakaoSummaryDao().getSummaryRecordsByRoom(roomName).collectAsState(initial = emptyList())
+    var showConfirmClearAll by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.HistoryEdu, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "[$roomName] 요약 기록 (${records.size}건)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp)
+            ) {
+                if (records.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.History,
+                                contentDescription = null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.outline
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "아직 생성된 요약 기록이 없습니다.",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "누적 대화 요약 또는 매일 정기 요약이 실행되면\n이곳에 차곡차곡 보관됩니다.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.outline,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(records, key = { it.id }) { record ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = timeFormat.format(Date(record.createdAt)),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                            BadgeChip(
+                                                text = "${record.messageCount}개 대화",
+                                                color = Color(0xFFE8F5E9),
+                                                textColor = Color(0xFF2E7D32)
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    db.kakaoSummaryDao().deleteSummaryRecord(record)
+                                                }
+                                            },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.DeleteOutline,
+                                                contentDescription = "기록 삭제",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    Text(
+                                        text = record.summaryText,
+                                        fontSize = 13.sp,
+                                        lineHeight = 18.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
+                                        TextButton(
+                                            onClick = {
+                                                clipboardManager.setText(AnnotatedString("[AI 요약: $roomName]\n${record.summaryText}"))
+                                                Toast.makeText(context, "요약 내용이 복사되었습니다.", Toast.LENGTH_SHORT).show()
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("복사", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("닫기")
+            }
+        },
+        dismissButton = {
+            if (records.isNotEmpty()) {
+                TextButton(onClick = { showConfirmClearAll = true }) {
+                    Text("전체 비우기", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    )
+
+    if (showConfirmClearAll) {
+        AlertDialog(
+            onDismissRequest = { showConfirmClearAll = false },
+            title = { Text("요약 기록 전체 삭제") },
+            text = { Text("[$roomName]의 모든 요약 기록을 삭제하시겠습니까?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        coroutineScope.launch {
+                            db.kakaoSummaryDao().clearSummaryRecordsByRoom(roomName)
+                            showConfirmClearAll = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("전체 삭제")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmClearAll = false }) {
+                    Text("취소")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun GalaxyWatchGuideDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.NotificationsOff, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("⌚ 갤럭시 워치 카톡 알림 차단 가이드", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "휴대폰에서는 상단바 알림이 즉시 숨겨지는데 갤럭시 워치에서 계속 진동이 울리는 경우, 삼성 웨어러블 앱이 블루투스로 알림을 즉시 복사하기 때문입니다.",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("🚀 NotiPassDroid v1.6.0 엔진 개선 완료", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                        Text("• 수신 즉시 0.1ms 이내에 초고속 알림 취소(Cancel & Snooze)를 적용하여 워치 전달을 선제 차단합니다.", fontSize = 11.sp)
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                Text("✨ 100% 완벽 차단을 위한 2가지 필수 설정", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("1️⃣ 카카오톡 설정 (가장 중요!)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFFE65100))
+                        Text("• 카톡 앱 실행 > ⚙️ 설정 > [전체 설정] > [알림]", fontSize = 11.sp)
+                        Text("• [알림센터에 메시지 표시] 항목 클릭", fontSize = 11.sp)
+                        Text("• [알림 켠 채팅방만]으로 변경!", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Text("💡 단톡방의 카톡 알림(종 아이콘)을 꺼두시면 워치로 소리/진동이 아예 가지 않으며, NotiPassDroid는 정상적으로 대화록을 수집하고 요약합니다.", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("2️⃣ 갤럭시 웨어러블 앱 설정", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF1565C0))
+                        Text("• Galaxy Wearable 앱 실행 > [워치 설정] > [알림]", fontSize = 11.sp)
+                        Text("• [휴대전화에서 알림 삭제 시 워치에서도 삭제] 켜기", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text("• [휴대전화를 사용하는 중에는 워치에 알림 표시 안 함] 켜기", fontSize = 11.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("확인했습니다")
             }
         }
     )

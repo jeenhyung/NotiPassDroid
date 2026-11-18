@@ -14,6 +14,7 @@ import com.notipass.droid.data.db.AppDatabase
 import com.notipass.droid.data.preference.AppPreferences
 import com.notipass.droid.data.storage.KakaoLogStorage
 import com.notipass.droid.model.KakaoSummaryConfig
+import com.notipass.droid.model.KakaoSummaryRecord
 import com.notipass.droid.model.LogStatus
 import com.notipass.droid.model.NotificationLog
 import com.notipass.droid.model.SummaryDeliveryType
@@ -60,12 +61,25 @@ object KakaoSummaryEngine {
             val summaryText = result.summary.trim()
             val fullMessage = "[AI 요약: $roomName]\n$summaryText\n(총 ${messageCount}개 대화 정리)"
 
-            // 1. Deliver to Local Notification
+            // 1. Save to dedicated KakaoSummaryRecord history table
+            val record = KakaoSummaryRecord(
+                configId = config.id,
+                roomName = roomName,
+                messageCount = messageCount,
+                summaryText = summaryText,
+                style = config.summaryStyle,
+                deliveryType = config.deliveryType,
+                createdAt = System.currentTimeMillis()
+            )
+            val recordId = db.kakaoSummaryDao().insertSummaryRecord(record)
+            Log.i(TAG, "Saved summary record #$recordId for room $roomName")
+
+            // 2. Deliver to Local Notification
             if (config.deliveryType == SummaryDeliveryType.LOCAL_NOTIFICATION || config.deliveryType == SummaryDeliveryType.ALL) {
-                postLocalNotification(context, roomName, summaryText)
+                postLocalNotification(context, roomName, summaryText, recordId = recordId)
             }
 
-            // 2. Deliver via SMS (Self or Target)
+            // 3. Deliver via SMS (Self or Target)
             var smsStatusDesc: String? = null
             if (config.deliveryType == SummaryDeliveryType.SELF_SMS ||
                 config.deliveryType == SummaryDeliveryType.TARGET_SMS ||
@@ -141,6 +155,7 @@ object KakaoSummaryEngine {
         context: Context,
         roomName: String,
         content: String,
+        recordId: Long = 0,
         isError: Boolean = false
     ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -152,7 +167,7 @@ object KakaoSummaryEngine {
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "단톡방 AI 1줄 요약 알림을 제공합니다."
+                description = "단톡방 AI 요약 알림을 제공합니다."
                 enableVibration(true)
             }
             notificationManager.createNotificationChannel(channel)
@@ -160,10 +175,13 @@ object KakaoSummaryEngine {
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("EXTRA_NAVIGATE_SUMMARY_HISTORY", true)
+            putExtra("EXTRA_ROOM_NAME", roomName)
+            putExtra("EXTRA_RECORD_ID", recordId)
         }
         val pendingIntent = PendingIntent.getActivity(
             context,
-            roomName.hashCode(),
+            (roomName + recordId).hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

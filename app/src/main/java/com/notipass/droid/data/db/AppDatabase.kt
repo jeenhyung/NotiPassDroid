@@ -8,12 +8,13 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.notipass.droid.model.KakaoSummaryConfig
+import com.notipass.droid.model.KakaoSummaryRecord
 import com.notipass.droid.model.NotificationLog
 import com.notipass.droid.model.Rule
 
 @Database(
-    entities = [Rule::class, NotificationLog::class, KakaoSummaryConfig::class],
-    version = 5, // Incremented to 5 for summaryStyle field
+    entities = [Rule::class, NotificationLog::class, KakaoSummaryConfig::class, KakaoSummaryRecord::class],
+    version = 6, // Incremented to 6 for kakao_summary_records history table
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -89,13 +90,34 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                try {
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `kakao_summary_records` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `configId` INTEGER NOT NULL DEFAULT 0,
+                            `roomName` TEXT NOT NULL,
+                            `messageCount` INTEGER NOT NULL,
+                            `summaryText` TEXT NOT NULL,
+                            `style` TEXT NOT NULL DEFAULT 'AUTO',
+                            `deliveryType` TEXT NOT NULL DEFAULT 'LOCAL_NOTIFICATION',
+                            `createdAt` INTEGER NOT NULL
+                        )
+                    """.trimIndent())
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_kakao_summary_records_roomName` ON `kakao_summary_records` (`roomName`)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_kakao_summary_records_createdAt` ON `kakao_summary_records` (`createdAt`)")
+                } catch (_: Exception) {}
+            }
+        }
+
         private fun buildDatabase(context: Context): AppDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 DB_NAME
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .fallbackToDestructiveMigration()
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()

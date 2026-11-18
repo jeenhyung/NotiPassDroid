@@ -50,6 +50,31 @@ class NotificationPassService : NotificationListenerService() {
             }
         )
 
+        // Ultra-fast in-memory cache of room names configured to dismiss notifications (0ms latency for Galaxy Watch / Wear OS)
+        @Volatile
+        private var cachedDismissRooms: Set<String> = emptySet()
+
+        fun updateDismissRoomsCache(rooms: Set<String>) {
+            cachedDismissRooms = rooms.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            Log.d(TAG, "Updated cachedDismissRooms: $cachedDismissRooms")
+        }
+
+        fun refreshDismissRoomsCache(context: Context) {
+            try {
+                CoroutineScope(Dispatchers.IO).launch {
+                    val db = AppDatabase.getDatabase(context)
+                    val dismissRooms = db.kakaoSummaryDao().getEnabledConfigs()
+                        .filter { it.dismissNotification }
+                        .map { it.roomName.trim() }
+                        .filter { it.isNotEmpty() }
+                        .toSet()
+                    updateDismissRoomsCache(dismissRooms)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh dismiss rooms cache", e)
+            }
+        }
+
         fun rebindService(context: Context) {
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -166,6 +191,7 @@ class NotificationPassService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         _isServiceConnected.value = true
+        refreshDismissRoomsCache(applicationContext)
         Log.i(TAG, "NotificationPassService connected and listening.")
     }
 
@@ -241,6 +267,34 @@ class NotificationPassService : NotificationListenerService() {
         // 3. SubText (Chat room name in KakaoTalk group chats)
         val subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString() ?: ""
 
+        // Ultra-Fast Synchronous Dismissal for KakaoTalk Monitored Rooms (Prevents Galaxy Watch / Wear OS vibration)
+        if (pkgName == "com.kakao.talk") {
+            val cleanSub = subText.trim()
+            val cleanTitle = title.trim()
+            val matchesDismissRoom = cachedDismissRooms.any { room ->
+                room.isNotEmpty() && (
+                    cleanSub.equals(room, ignoreCase = true) ||
+                    cleanTitle.equals(room, ignoreCase = true) ||
+                    cleanSub.contains(room, ignoreCase = true)
+                )
+            }
+            if (matchesDismissRoom) {
+                try {
+                    // Synchronously cancel immediately before any thread switch or Bluetooth relay!
+                    cancelNotification(sbn.key)
+                    cancelNotification(sbn.packageName, sbn.tag, sbn.id)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        try {
+                            snoozeNotification(sbn.key, 3600000L) // 1 hour snooze to suppress wearable alerts
+                        } catch (_: Exception) {}
+                    }
+                    Log.i(TAG, "Ultra-fast synchronous cancel for KakaoTalk room (key=${sbn.key})")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed ultra-fast cancel", e)
+                }
+            }
+        }
+
         // Skip if both title and text are completely blank
         if (title.isBlank() && text.isBlank()) {
             Log.d(TAG, "Ignored empty notification from $pkgName")
@@ -314,8 +368,13 @@ class NotificationPassService : NotificationListenerService() {
 
             // 1. Dismiss notification if configured (suppress sound/vibration/status bar)
             if (matchedConfig.dismissNotification) {
+                val rName = matchedConfig.roomName.trim()
+                if (!cachedDismissRooms.contains(rName)) {
+                    cachedDismissRooms = cachedDismissRooms + rName
+                }
                 try {
                     cancelNotification(sbn.key)
+                    cancelNotification(sbn.packageName, sbn.tag, sbn.id)
                     Log.d(TAG, "Canceled notification key: ${sbn.key}")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to cancel notification", e)
