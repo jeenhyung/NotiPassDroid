@@ -327,7 +327,7 @@ fun HomeScreen(
                     ) {
                         Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("단톡방 AI 요약 & 드라이브 백업 열기")
+                        Text("AI 요약 & 앱 알림 수집 열기")
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))

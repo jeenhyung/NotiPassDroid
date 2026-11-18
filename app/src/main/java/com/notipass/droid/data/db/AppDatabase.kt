@@ -7,20 +7,32 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.notipass.droid.model.AppCollectorConfig
+import com.notipass.droid.model.AppSummaryRecord
+import com.notipass.droid.model.CollectedAppNotification
 import com.notipass.droid.model.KakaoSummaryConfig
 import com.notipass.droid.model.KakaoSummaryRecord
 import com.notipass.droid.model.NotificationLog
 import com.notipass.droid.model.Rule
 
 @Database(
-    entities = [Rule::class, NotificationLog::class, KakaoSummaryConfig::class, KakaoSummaryRecord::class],
-    version = 6, // Incremented to 6 for kakao_summary_records history table
+    entities = [
+        Rule::class,
+        NotificationLog::class,
+        KakaoSummaryConfig::class,
+        KakaoSummaryRecord::class,
+        AppCollectorConfig::class,
+        CollectedAppNotification::class,
+        AppSummaryRecord::class
+    ],
+    version = 7, // Incremented to 7 for app_collector tables
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun ruleDao(): RuleDao
     abstract fun logDao(): LogDao
     abstract fun kakaoSummaryDao(): KakaoSummaryDao
+    abstract fun appCollectorDao(): AppCollectorDao
 
     companion object {
         private const val TAG = "AppDatabase"
@@ -111,13 +123,70 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                try {
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `app_collector_configs` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `packageName` TEXT NOT NULL,
+                            `appName` TEXT NOT NULL,
+                            `isEnabled` INTEGER NOT NULL DEFAULT 1,
+                            `dismissNotification` INTEGER NOT NULL DEFAULT 0,
+                            `summaryThresholdCount` INTEGER NOT NULL DEFAULT 30,
+                            `isScheduledTimeEnabled` INTEGER NOT NULL DEFAULT 0,
+                            `scheduledHour` INTEGER NOT NULL DEFAULT 21,
+                            `scheduledMinute` INTEGER NOT NULL DEFAULT 0,
+                            `deliveryType` TEXT NOT NULL DEFAULT 'LOCAL_NOTIFICATION',
+                            `targetSmsNumber` TEXT NOT NULL DEFAULT '',
+                            `summaryStyle` TEXT NOT NULL DEFAULT 'AUTO',
+                            `lastSummarizedTime` INTEGER NOT NULL DEFAULT 0,
+                            `createdAt` INTEGER NOT NULL DEFAULT 0
+                        )
+                    """.trimIndent())
+                    db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_app_collector_configs_packageName` ON `app_collector_configs` (`packageName`)")
+
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `collected_app_notifications` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `packageName` TEXT NOT NULL,
+                            `appName` TEXT NOT NULL,
+                            `title` TEXT NOT NULL DEFAULT '',
+                            `content` TEXT NOT NULL DEFAULT '',
+                            `subText` TEXT NOT NULL DEFAULT '',
+                            `postTime` INTEGER NOT NULL,
+                            `createdAt` INTEGER NOT NULL
+                        )
+                    """.trimIndent())
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_collected_app_notifications_packageName` ON `collected_app_notifications` (`packageName`)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_collected_app_notifications_postTime` ON `collected_app_notifications` (`postTime`)")
+
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `app_summary_records` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `configId` INTEGER NOT NULL DEFAULT 0,
+                            `packageName` TEXT NOT NULL,
+                            `appName` TEXT NOT NULL,
+                            `notificationCount` INTEGER NOT NULL,
+                            `summaryText` TEXT NOT NULL,
+                            `style` TEXT NOT NULL DEFAULT 'AUTO',
+                            `deliveryType` TEXT NOT NULL DEFAULT 'LOCAL_NOTIFICATION',
+                            `createdAt` INTEGER NOT NULL
+                        )
+                    """.trimIndent())
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_app_summary_records_packageName` ON `app_summary_records` (`packageName`)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_app_summary_records_configId` ON `app_summary_records` (`configId`)")
+                } catch (_: Exception) {}
+            }
+        }
+
         private fun buildDatabase(context: Context): AppDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 DB_NAME
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .fallbackToDestructiveMigration()
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()

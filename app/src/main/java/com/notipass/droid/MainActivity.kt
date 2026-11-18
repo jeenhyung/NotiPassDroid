@@ -44,6 +44,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private var initialTargetRoom by mutableStateOf<String?>(null)
+    private var initialTargetAppPackage by mutableStateOf<String?>(null)
+    private var initialTargetTab by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,7 +74,12 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 } else {
-                    AppNavigation(db = db, initialTargetRoom = initialTargetRoom)
+                    AppNavigation(
+                        db = db,
+                        initialTargetRoom = initialTargetRoom,
+                        initialTargetAppPackage = initialTargetAppPackage,
+                        initialTargetTab = initialTargetTab
+                    )
                 }
             }
         }
@@ -89,7 +96,15 @@ class MainActivity : ComponentActivity() {
             val room = intent.getStringExtra("EXTRA_ROOM_NAME")
             if (!room.isNullOrBlank()) {
                 initialTargetRoom = room
+                initialTargetTab = 0
                 Log.i(TAG, "Navigating to summary history for room: $room")
+            }
+        } else if (intent?.getBooleanExtra("EXTRA_NAVIGATE_APP_SUMMARY_HISTORY", false) == true) {
+            val pkg = intent.getStringExtra("EXTRA_PACKAGE_NAME")
+            if (!pkg.isNullOrBlank()) {
+                initialTargetAppPackage = pkg
+                initialTargetTab = 1
+                Log.i(TAG, "Navigating to app summary history for pkg: $pkg")
             }
         }
     }
@@ -98,14 +113,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppNavigation(
     db: AppDatabase,
-    initialTargetRoom: String? = null
+    initialTargetRoom: String? = null,
+    initialTargetAppPackage: String? = null,
+    initialTargetTab: Int = 0
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
-    LaunchedEffect(initialTargetRoom) {
-        if (!initialTargetRoom.isNullOrBlank()) {
+    LaunchedEffect(initialTargetRoom, initialTargetAppPackage, initialTargetTab) {
+        if (!initialTargetRoom.isNullOrBlank() || !initialTargetAppPackage.isNullOrBlank() || initialTargetTab > 0) {
             navController.navigate("kakao_summary") {
                 popUpTo("home")
             }
@@ -147,7 +164,7 @@ fun AppNavigation(
                             }
                         },
                         icon = { Icon(Icons.Default.AutoAwesome, contentDescription = "AI 요약") },
-                        label = { Text("AI 요약/백업") }
+                        label = { Text("AI 요약/수집") }
                     )
                     NavigationBarItem(
                         selected = currentRoute == "logs",
@@ -185,7 +202,12 @@ fun AppNavigation(
                 )
             }
             composable("kakao_summary") {
-                KakaoSummaryScreen(db = db, initialTargetRoom = initialTargetRoom)
+                KakaoSummaryScreen(
+                    db = db,
+                    initialTargetRoom = initialTargetRoom,
+                    initialTargetAppPackage = initialTargetAppPackage,
+                    initialTargetTab = initialTargetTab
+                )
             }
             composable(
                 route = "rule_edit/{ruleId}",

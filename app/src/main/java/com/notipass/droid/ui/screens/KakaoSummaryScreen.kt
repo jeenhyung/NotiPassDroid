@@ -52,11 +52,20 @@ import java.util.*
 fun KakaoSummaryScreen(
     db: AppDatabase,
     onNavigateBack: (() -> Unit)? = null,
-    initialTargetRoom: String? = null
+    initialTargetRoom: String? = null,
+    initialTargetAppPackage: String? = null,
+    initialTargetTab: Int = 0
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
+
+    var selectedTab by remember { mutableStateOf(initialTargetTab) }
+    var triggerAddApp by remember { mutableStateOf(false) }
+
+    LaunchedEffect(initialTargetTab) {
+        selectedTab = initialTargetTab
+    }
 
     // Preferences states
     var geminiApiKey by remember { mutableStateOf(AppPreferences.getGeminiApiKey(context)) }
@@ -98,7 +107,7 @@ fun KakaoSummaryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("단톡방 AI 요약 & 드라이브 백업", fontWeight = FontWeight.Bold) },
+                title = { Text("AI 요약 & 알림 수집", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     if (onNavigateBack != null) {
                         IconButton(onClick = onNavigateBack) {
@@ -108,10 +117,14 @@ fun KakaoSummaryScreen(
                 },
                 actions = {
                     IconButton(onClick = {
-                        editingConfig = null
-                        showAddEditDialog = true
+                        if (selectedTab == 0) {
+                            editingConfig = null
+                            showAddEditDialog = true
+                        } else {
+                            triggerAddApp = true
+                        }
                     }) {
-                        Icon(Icons.Default.Add, contentDescription = "단톡방 추가")
+                        Icon(Icons.Default.Add, contentDescription = if (selectedTab == 0) "단톡방 추가" else "앱 추가")
                     }
                 }
             )
@@ -119,22 +132,47 @@ fun KakaoSummaryScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
-                    editingConfig = null
-                    showAddEditDialog = true
+                    if (selectedTab == 0) {
+                        editingConfig = null
+                        showAddEditDialog = true
+                    } else {
+                        triggerAddApp = true
+                    }
                 },
                 containerColor = MaterialTheme.colorScheme.primary
             ) {
-                Icon(Icons.Default.Add, contentDescription = "단톡방 추가")
+                Icon(Icons.Default.Add, contentDescription = if (selectedTab == 0) "단톡방 추가" else "앱 추가")
             }
         }
     ) { paddingValues ->
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            TabRow(selectedTabIndex = selectedTab) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("카카오톡 요약") },
+                    icon = { Icon(Icons.Default.Forum, contentDescription = null, modifier = Modifier.size(20.dp)) }
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("앱 알림 수집/요약") },
+                    icon = { Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(20.dp)) }
+                )
+            }
+
+            if (selectedTab == 0) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    contentPadding = PaddingValues(top = 16.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
             // 1. Feature Intro Card
             item {
                 Card(
@@ -525,7 +563,16 @@ fun KakaoSummaryScreen(
                 Spacer(modifier = Modifier.height(48.dp))
             }
         }
+    } else {
+        AppCollectorTabContent(
+            db = db,
+            initialTargetAppPackage = initialTargetAppPackage,
+            showAddAppTrigger = triggerAddApp,
+            onResetAddAppTrigger = { triggerAddApp = false }
+        )
     }
+}
+}
 
     // Add / Edit Dialog
     if (showAddEditDialog) {

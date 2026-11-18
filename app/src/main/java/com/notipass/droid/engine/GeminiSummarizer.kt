@@ -367,6 +367,131 @@ $sanitizedLogs
         GeminiResult(false, errorMessage = lastError)
     }
 
+    suspend fun summarizeAppNotifications(
+        apiKey: String,
+        appName: String,
+        notificationsText: String,
+        notificationCount: Int = 0,
+        style: SummaryStyle = SummaryStyle.AUTO
+    ): GeminiResult = withContext(Dispatchers.IO) {
+        val cleanKey = apiKey.trim().removePrefix("Bearer ").trim()
+        if (cleanKey.isBlank()) {
+            return@withContext GeminiResult(false, errorMessage = "Gemini API 키가 등록되지 않았습니다.")
+        }
+
+        if (notificationsText.isBlank()) {
+            return@withContext GeminiResult(false, errorMessage = "요약할 알림 내역이 없습니다.")
+        }
+
+        val effectiveCount = if (notificationCount > 0) notificationCount else notificationsText.lines().count { it.isNotBlank() }
+
+        val (prompt, maxTokens) = when (style) {
+            SummaryStyle.REPORT -> {
+                val p = """
+당신은 스마트폰 앱 알림 전문 AI 분석 비서입니다.
+아래는 '$appName' 앱에서 수신된 알림 내역(총 ${effectiveCount}건)입니다.
+중복되거나 일상적인 잡음은 거르고, 핵심 공지, 중요 정보, 거래/결제 내역, 일정, 주요 메시지 등을 체계적인 보고서 형식으로 작성해 주세요:
+
+📋 [$appName 알림 상세 보고서] (총 ${effectiveCount}건 정리)
+
+📌 1. 전체 핵심 요약
+- 전체 알림의 가장 중요한 핵심 내용을 2~3문장으로 명확히 요약합니다.
+
+🔔 2. 주요 알림 항목별 정리
+- 알림 성격별(예: 결제/주문, 새 메시지/채팅, 공지사항, 키워드 알림 등)로 분류하여 중요한 세부 내용과 시간을 정리합니다.
+
+🎯 3. 즉시 확인 또는 대응이 필요한 사항
+- 사용자가 놓치지 말아야 할 긴급 확인 항목, 결제/배송 변동, 예약/마감 일정 등을 명시합니다. (없을 시 '특이 사항 없음' 표기)
+
+(사족 없이 본문만 바로 출력하세요.)
+
+[알림 내역]:
+$notificationsText
+                """.trimIndent()
+                Pair(p, 3000)
+            }
+            SummaryStyle.BRIEF -> {
+                val p = """
+당신은 스마트폰 앱 알림 전문 AI 비서입니다.
+아래는 '$appName' 앱에서 수신된 알림 내역(총 ${effectiveCount}건)입니다.
+가장 중요한 핵심 정보와 확인이 필요한 사항을 2~4개 불릿 포인트로 간결하고 명확하게 요약해 주세요.
+(사족 없이 요약 내용만 바로 출력하세요.)
+
+[알림 내역]:
+$notificationsText
+                """.trimIndent()
+                Pair(p, 900)
+            }
+            SummaryStyle.AUTO -> {
+                val p = """
+당신은 스마트폰 앱 알림 전문 AI 비서입니다.
+아래는 '$appName' 앱에서 수신된 알림 내역(총 ${effectiveCount}건)입니다.
+중복된 내용은 합치고, 주요 내용과 핵심 정보를 아래 양식에 맞추어 깔끔하게 요약해 주세요:
+
+📋 [$appName 알림 브리핑] (총 ${effectiveCount}건 정리)
+
+📌 1. 핵심 요약
+- 전체 알림 중 가장 중요한 내용을 1~2문장으로 요약합니다.
+
+🔔 2. 주요 알림 내용
+- 중요한 알림 내용(결제, 배송, 메시지, 공지 등)을 2~4개 항목으로 정리합니다.
+
+🎯 3. 확인 필요 사항
+- 사용자가 확인해야 할 사항이나 일정. (없을 시 '확인 필요 사항 없음' 표기)
+
+(사족 없이 본문만 바로 출력하세요.)
+
+[알림 내역]:
+$notificationsText
+                """.trimIndent()
+                Pair(p, 1800)
+            }
+        }
+
+        // Try cached model first
+        cachedWorkingModel?.let { model ->
+            val result = executeGenerateContent(cleanKey, model, prompt, maxTokens)
+            if (result.isSuccess) return@withContext result
+        }
+
+        // Dynamically discover models
+        val discoveryResult = fetchAvailableModels(cleanKey)
+        val modelsToTry = if (discoveryResult.isSuccess && !discoveryResult.getOrNull().isNullOrEmpty()) {
+            val list = discoveryResult.getOrNull()!!
+            list.sortedWith(compareBy { name ->
+                when {
+                    name.contains("2.0-flash", ignoreCase = true) -> 0
+                    name.contains("2.5-flash", ignoreCase = true) -> 1
+                    name.contains("1.5-flash", ignoreCase = true) -> 2
+                    name.contains("flash", ignoreCase = true) -> 3
+                    name.contains("pro", ignoreCase = true) -> 4
+                    else -> 5
+                }
+            })
+        } else {
+            val exc = discoveryResult.exceptionOrNull()
+            if (exc != null && (exc.message?.contains("올바르지 않습니다") == true || exc.message?.contains("권한") == true)) {
+                return@withContext GeminiResult(false, errorMessage = exc.message)
+            }
+            DEFAULT_CANDIDATE_MODELS
+        }
+
+        var lastError = "앱 알림 요약 처리에 실패했습니다."
+        for (model in modelsToTry) {
+            val result = executeGenerateContent(cleanKey, model, prompt, maxTokens)
+            if (result.isSuccess) {
+                cachedWorkingModel = model
+                return@withContext result
+            }
+            lastError = result.errorMessage ?: lastError
+            if (lastError.contains("API 키가 올바르지") || lastError.contains("권한 오류")) {
+                return@withContext GeminiResult(false, errorMessage = lastError)
+            }
+        }
+
+        GeminiResult(false, errorMessage = lastError)
+    }
+
     private fun executeGenerateContent(
         cleanKey: String,
         modelName: String,

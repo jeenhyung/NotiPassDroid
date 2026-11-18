@@ -29,6 +29,7 @@ data class InstalledApp(
 @Composable
 fun AppPickerDialog(
     onDismissRequest: () -> Unit,
+    showAllAppsOption: Boolean = true,
     onAppSelected: (InstalledApp?) -> Unit
 ) {
     val context = LocalContext.current
@@ -95,26 +96,28 @@ fun AppPickerDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // "All Apps" option
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onAppSelected(null) },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                if (showAllAppsOption) {
+                    // "All Apps" option
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onAppSelected(null) },
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
                     ) {
-                        Text(
-                            text = "🌐 모든 앱 (필터 없음)",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "🌐 모든 앱 (필터 없음)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 if (isLoading) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

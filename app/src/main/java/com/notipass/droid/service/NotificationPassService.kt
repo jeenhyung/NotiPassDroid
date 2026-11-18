@@ -11,6 +11,7 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.notipass.droid.data.db.AppDatabase
 import com.notipass.droid.data.storage.KakaoLogStorage
+import com.notipass.droid.engine.AppSummaryEngine
 import com.notipass.droid.engine.GoogleDriveDispatcher
 import com.notipass.droid.engine.KakaoSummaryEngine
 import com.notipass.droid.engine.NotificationPayload
@@ -19,6 +20,7 @@ import com.notipass.droid.engine.SmsDispatcher
 import com.notipass.droid.engine.TemplateEngine
 import com.notipass.droid.engine.WebhookDispatcher
 import com.notipass.droid.model.ActionType
+import com.notipass.droid.model.CollectedAppNotification
 import com.notipass.droid.model.LogStatus
 import com.notipass.droid.model.NotificationLog
 import com.notipass.droid.model.TriggerType
@@ -72,6 +74,33 @@ class NotificationPassService : NotificationListenerService() {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to refresh dismiss rooms cache", e)
+            }
+        }
+
+        // App collector in-memory caches
+        @Volatile
+        private var cachedCollectorPackages: Set<String> = emptySet()
+
+        @Volatile
+        private var cachedDismissPackages: Set<String> = emptySet()
+
+        fun updateCollectorCache(packages: Set<String>, dismissPackages: Set<String>) {
+            cachedCollectorPackages = packages
+            cachedDismissPackages = dismissPackages
+            Log.d(TAG, "Updated collector cache: collectors=$cachedCollectorPackages, dismiss=$cachedDismissPackages")
+        }
+
+        fun refreshCollectorCache(context: Context) {
+            try {
+                CoroutineScope(Dispatchers.IO).launch {
+                    val db = AppDatabase.getDatabase(context)
+                    val configs = db.appCollectorDao().getEnabledConfigs()
+                    val packages = configs.map { it.packageName }.toSet()
+                    val dismiss = configs.filter { it.dismissNotification }.map { it.packageName }.toSet()
+                    updateCollectorCache(packages, dismiss)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh collector cache", e)
             }
         }
 
@@ -192,6 +221,7 @@ class NotificationPassService : NotificationListenerService() {
         super.onListenerConnected()
         _isServiceConnected.value = true
         refreshDismissRoomsCache(applicationContext)
+        refreshCollectorCache(applicationContext)
         Log.i(TAG, "NotificationPassService connected and listening.")
     }
 
@@ -295,6 +325,22 @@ class NotificationPassService : NotificationListenerService() {
             }
         }
 
+        // Ultra-Fast Synchronous Dismissal for App Collector configured packages with dismiss=true
+        if (cachedDismissPackages.contains(pkgName)) {
+            try {
+                cancelNotification(sbn.key)
+                cancelNotification(sbn.packageName, sbn.tag, sbn.id)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try {
+                        snoozeNotification(sbn.key, 3600000L)
+                    } catch (_: Exception) {}
+                }
+                Log.i(TAG, "Ultra-fast synchronous cancel for collector package: $pkgName")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed ultra-fast cancel for package $pkgName", e)
+            }
+        }
+
         // Skip if both title and text are completely blank
         if (title.isBlank() && text.isBlank()) {
             Log.d(TAG, "Ignored empty notification from $pkgName")
@@ -334,6 +380,11 @@ class NotificationPassService : NotificationListenerService() {
 
         // Process in background coroutine
         serviceScope.launch {
+            // Check App Collector
+            if (cachedCollectorPackages.contains(pkgName)) {
+                handleAppCollectorNotification(sbn, pkgName, title, text, subText)
+            }
+
             if (pkgName == "com.kakao.talk") {
                 val intercepted = handleKakaoMessage(sbn, title, text, subText)
                 if (intercepted) {
@@ -341,6 +392,57 @@ class NotificationPassService : NotificationListenerService() {
                 }
             }
             processNotificationPayload(applicationContext, payload)
+        }
+    }
+
+    private suspend fun handleAppCollectorNotification(
+        sbn: StatusBarNotification,
+        pkgName: String,
+        title: String,
+        text: String,
+        subText: String
+    ): Boolean {
+        return try {
+            val db = AppDatabase.getDatabase(applicationContext)
+            val config = db.appCollectorDao().getConfigByPackage(pkgName) ?: return false
+            if (!config.isEnabled) return false
+
+            // Dismiss if configured
+            if (config.dismissNotification) {
+                try {
+                    cancelNotification(sbn.key)
+                    cancelNotification(sbn.packageName, sbn.tag, sbn.id)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to cancel notification for ${config.packageName}", e)
+                }
+            }
+
+            // Save to DB
+            val appNotification = CollectedAppNotification(
+                packageName = config.packageName,
+                appName = config.appName,
+                title = title.trim(),
+                content = text.trim(),
+                subText = subText.trim(),
+                postTime = sbn.postTime,
+                createdAt = System.currentTimeMillis()
+            )
+            db.appCollectorDao().insertNotification(appNotification)
+            Log.d(TAG, "Saved collected notification for ${config.appName}: $title - $text")
+
+            // Check auto summary threshold
+            if (config.summaryThresholdCount > 0) {
+                val count = db.appCollectorDao().getNotificationCount(config.packageName)
+                if (count >= config.summaryThresholdCount) {
+                    Log.i(TAG, "Threshold reached ($count/${config.summaryThresholdCount}) for ${config.appName}. Triggering summary...")
+                    AppSummaryEngine.executeSummary(applicationContext, config, isManual = false)
+                }
+            }
+
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling app collector notification", e)
+            false
         }
     }
 
