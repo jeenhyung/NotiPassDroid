@@ -33,14 +33,12 @@ class CallReceiver : BroadcastReceiver() {
         private var ringingNumber: String? = null
         private var wasRinging = false
 
-        // Cache to deduplicate call triggers within 4 seconds: "$triggerType|$callerNumber" -> timestamp
-        private val recentCallTriggerCache = java.util.Collections.synchronizedMap(
-            object : LinkedHashMap<String, Long>(16, 0.75f, true) {
-                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
-                    return size > 50
-                }
+        // Cache to deduplicate call triggers within 5 seconds: "$triggerType|$callerNumber" -> timestamp
+        private val recentCallTriggerCache = object : LinkedHashMap<String, Long>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
+                return size > 50
             }
-        )
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
@@ -114,13 +112,20 @@ class CallReceiver : BroadcastReceiver() {
     private suspend fun handleCallTrigger(context: Context, triggerType: TriggerType, callerNumber: String) {
         val cleanNumber = callerNumber.trim()
         val triggerKey = "$triggerType|$cleanNumber"
-        val now = System.currentTimeMillis()
-        val lastTrigger = recentCallTriggerCache[triggerKey] ?: 0L
-        if (now - lastTrigger < 4000L) {
-            Log.w(TAG, "Suppressed duplicate call trigger within 4s: $triggerKey")
+        val isDuplicate = synchronized(recentCallTriggerCache) {
+            val now = System.currentTimeMillis()
+            val lastTrigger = recentCallTriggerCache[triggerKey] ?: 0L
+            if (now - lastTrigger < 5000L) {
+                true
+            } else {
+                recentCallTriggerCache[triggerKey] = now
+                false
+            }
+        }
+        if (isDuplicate) {
+            Log.w(TAG, "Suppressed duplicate call trigger within 5s: $triggerKey")
             return
         }
-        recentCallTriggerCache[triggerKey] = now
 
         val db = AppDatabase.getDatabase(context)
         val enabledRules = db.ruleDao().getEnabledRules()

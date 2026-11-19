@@ -9,21 +9,20 @@ import kotlinx.coroutines.withContext
 
 data class SmsResult(
     val isSuccess: Boolean,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isDuplicateSuppressed: Boolean = false
 )
 
 object SmsDispatcher {
 
     private const val TAG = "SmsDispatcher"
 
-    // In-memory cache to prevent duplicate SMS transmissions within 4 seconds: "$cleanNumber|$trimmedMessage" -> timestamp
-    private val recentSmsCache = java.util.Collections.synchronizedMap(
-        object : LinkedHashMap<String, Long>(64, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
-                return size > 150
-            }
+    // In-memory cache to prevent duplicate SMS transmissions within 6 seconds: "$cleanNumber|$trimmedMessage" -> timestamp
+    private val recentSmsCache = object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
+            return size > 150
         }
-    )
+    }
 
     suspend fun send(
         context: Context,
@@ -39,15 +38,22 @@ object SmsDispatcher {
             return@withContext SmsResult(false, "발송할 메시지 내용이 비어있습니다.")
         }
 
-        // Deduplication check: suppress identical SMS to same number within 4 seconds
+        // Atomic deduplication check: suppress identical SMS to same number within 6 seconds
         val dedupeKey = "$cleanNumber|$trimmedMessage"
-        val now = System.currentTimeMillis()
-        val lastSent = recentSmsCache[dedupeKey] ?: 0L
-        if (now - lastSent < 4000L) {
-            Log.w(TAG, "Suppressed duplicate SMS within 4s to $cleanNumber: ${trimmedMessage.take(30)}...")
-            return@withContext SmsResult(isSuccess = true)
+        val isDuplicate = synchronized(recentSmsCache) {
+            val now = System.currentTimeMillis()
+            val lastSent = recentSmsCache[dedupeKey] ?: 0L
+            if (now - lastSent < 6000L) {
+                true
+            } else {
+                recentSmsCache[dedupeKey] = now
+                false
+            }
         }
-        recentSmsCache[dedupeKey] = now
+        if (isDuplicate) {
+            Log.w(TAG, "Suppressed duplicate SMS within 6s to $cleanNumber: ${trimmedMessage.take(30)}...")
+            return@withContext SmsResult(isSuccess = true, isDuplicateSuppressed = true)
+        }
 
         try {
             val smsManager: SmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

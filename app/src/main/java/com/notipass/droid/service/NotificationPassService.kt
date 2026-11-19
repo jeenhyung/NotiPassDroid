@@ -44,13 +44,18 @@ class NotificationPassService : NotificationListenerService() {
         val isServiceConnected = _isServiceConnected.asStateFlow()
 
         // Cache to deduplicate rapid duplicate notifications (KakaoTalk group summary / micro-updates)
-        private val recentNotificationCache = java.util.Collections.synchronizedMap(
-            object : LinkedHashMap<String, Long>(128, 0.75f, true) {
-                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
-                    return size > 500
-                }
+        private val recentNotificationCache = object : LinkedHashMap<String, Long>(128, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
+                return size > 500
             }
-        )
+        }
+
+        // Tracks last text seen per sbn.key to detect in-place BigTextStyle/InboxStyle updates
+        private val recentSbnTextCache = object : LinkedHashMap<String, Pair<String, Long>>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<String, Long>>?): Boolean {
+                return size > 200
+            }
+        }
 
         // Ultra-fast in-memory cache of room names configured to dismiss notifications (0ms latency for Galaxy Watch / Wear OS)
         @Volatile
@@ -135,9 +140,12 @@ class NotificationPassService : NotificationListenerService() {
                     var actionError: String? = null
                     var responseBody: String? = null
                     var httpCode: Int? = null
+                    var anyActionExecuted = false
+                    var allSuppressed = true
 
                     // 1. Webhook Action
                     if (rule.actionType == ActionType.WEBHOOK || rule.actionType == ActionType.BOTH) {
+                        anyActionExecuted = true
                         val renderedBody = TemplateEngine.render(
                             template = rule.webhookBodyTemplate,
                             payload = payload,
@@ -157,6 +165,9 @@ class NotificationPassService : NotificationListenerService() {
                             headersJson = rule.webhookHeadersJson,
                             bodyContent = renderedBody
                         )
+                        if (!webhookResult.isDuplicateSuppressed) {
+                            allSuppressed = false
+                        }
                         httpCode = webhookResult.statusCode
                         responseBody = webhookResult.responseBody
                         if (!webhookResult.isSuccess) {
@@ -167,6 +178,7 @@ class NotificationPassService : NotificationListenerService() {
 
                     // 2. SMS Action
                     if (rule.actionType == ActionType.SMS || rule.actionType == ActionType.BOTH) {
+                        anyActionExecuted = true
                         val targetNumber = if (rule.smsTargetNumber.contains("{caller}")) {
                             senderPhone ?: ""
                         } else {
@@ -181,6 +193,9 @@ class NotificationPassService : NotificationListenerService() {
                                 isJson = false
                             )
                             val smsResult = SmsDispatcher.send(context, targetNumber, smsText)
+                            if (!smsResult.isDuplicateSuppressed) {
+                                allSuppressed = false
+                            }
                             if (!smsResult.isSuccess) {
                                 actionSuccess = false
                                 actionError = (actionError?.let { "$it | " } ?: "") + "SMS 실패: ${smsResult.errorMessage}"
@@ -188,9 +203,16 @@ class NotificationPassService : NotificationListenerService() {
                                 responseBody = (responseBody?.let { "$it | " } ?: "") + "SMS 전송 완료 ($targetNumber)"
                             }
                         } else {
+                            allSuppressed = false
                             actionSuccess = false
                             actionError = "SMS 수신 대상 번호가 비어있습니다."
                         }
+                    }
+
+                    // Skip logging if all actions were suppressed as rapid duplicates
+                    if (anyActionExecuted && allSuppressed) {
+                        Log.d(TAG, "Skipped duplicate log entry for rule '${rule.name}'")
+                        continue
                     }
 
                     // Record Log
@@ -350,32 +372,65 @@ class NotificationPassService : NotificationListenerService() {
         val cleanTitle = title.trim()
         val cleanText = text.trim()
         val cleanSubText = subText.trim()
-        val now = System.currentTimeMillis()
+        val rawSbnKey = sbn.key ?: ""
+        val notiWhen = notification.`when`
 
-        // 3. Multi-level De-duplication for Android micro-updates (within 3.5 seconds)
+        // 3. Atomic 6-layer De-duplication for Android/Samsung micro-updates & async style/avatar refreshes
         val exactKey = "$pkgName|$cleanTitle|$cleanText|$cleanSubText"
         val contentKey = "$pkgName|$cleanTitle|$cleanText"
+        val textOnlyKey = if (cleanText.length >= 6) "$pkgName|text:$cleanText" else ""
         val postTimeKey = if (sbn.postTime > 0) "$pkgName|postTime:${sbn.postTime}" else ""
-        val sbnKey = sbn.key?.let { "key:$it" } ?: ""
+        val keyWhenKey = if (rawSbnKey.isNotEmpty() && notiWhen > 0) "kw:$rawSbnKey:$notiWhen" else ""
 
-        val isDuplicate = (recentNotificationCache[exactKey]?.let { now - it < 3500L } == true) ||
-                (cleanText.isNotEmpty() && recentNotificationCache[contentKey]?.let { now - it < 3000L } == true) ||
-                (postTimeKey.isNotEmpty() && cleanText.isNotEmpty() && recentNotificationCache[postTimeKey]?.let { now - it < 3000L } == true)
+        val isDuplicate = synchronized(recentNotificationCache) {
+            val now = System.currentTimeMillis()
+            val dupExact = recentNotificationCache[exactKey]?.let { now - it < 5000L } == true
+            val dupContent = cleanText.isNotEmpty() && (recentNotificationCache[contentKey]?.let { now - it < 5000L } == true)
+            val dupTextOnly = textOnlyKey.isNotEmpty() && (recentNotificationCache[textOnlyKey]?.let { now - it < 3500L } == true)
+            val dupPostTime = postTimeKey.isNotEmpty() && cleanText.isNotEmpty() && (recentNotificationCache[postTimeKey]?.let { now - it < 5000L } == true)
+            val dupKeyWhen = keyWhenKey.isNotEmpty() && (recentNotificationCache[keyWhenKey]?.let { now - it < 15000L } == true)
+
+            val dupSbnText = if (rawSbnKey.isNotEmpty() && cleanText.isNotEmpty()) {
+                val prev = recentSbnTextCache[rawSbnKey]
+                if (prev != null && now - prev.second < 5000L) {
+                    val prevText = prev.first
+                    cleanText == prevText ||
+                        cleanText.endsWith("\n$prevText") ||
+                        cleanText.endsWith(": $prevText") ||
+                        prevText.endsWith(": $cleanText")
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+
+            if (dupExact || dupContent || dupTextOnly || dupPostTime || dupKeyWhen || dupSbnText) {
+                true
+            } else {
+                recentNotificationCache[exactKey] = now
+                if (cleanText.isNotEmpty()) {
+                    recentNotificationCache[contentKey] = now
+                }
+                if (textOnlyKey.isNotEmpty()) {
+                    recentNotificationCache[textOnlyKey] = now
+                }
+                if (postTimeKey.isNotEmpty()) {
+                    recentNotificationCache[postTimeKey] = now
+                }
+                if (keyWhenKey.isNotEmpty()) {
+                    recentNotificationCache[keyWhenKey] = now
+                }
+                if (rawSbnKey.isNotEmpty() && cleanText.isNotEmpty()) {
+                    recentSbnTextCache[rawSbnKey] = Pair(cleanText, now)
+                }
+                false
+            }
+        }
 
         if (isDuplicate) {
-            Log.d(TAG, "Ignored duplicate notification within 3.5s: pkg=$pkgName, title=$cleanTitle, text=$cleanText")
+            Log.d(TAG, "Ignored duplicate notification: pkg=$pkgName, key=$rawSbnKey, title=$cleanTitle, text=$cleanText")
             return
-        }
-
-        recentNotificationCache[exactKey] = now
-        if (cleanText.isNotEmpty()) {
-            recentNotificationCache[contentKey] = now
-        }
-        if (postTimeKey.isNotEmpty()) {
-            recentNotificationCache[postTimeKey] = now
-        }
-        if (sbnKey.isNotEmpty()) {
-            recentNotificationCache[sbnKey] = now
         }
 
         // Try to resolve contact phone number if title matches a contact name in phonebook

@@ -14,21 +14,20 @@ data class WebhookResult(
     val isSuccess: Boolean,
     val statusCode: Int? = null,
     val responseBody: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isDuplicateSuppressed: Boolean = false
 )
 
 object WebhookDispatcher {
 
     private const val TAG = "WebhookDispatcher"
 
-    // In-memory cache to prevent duplicate Webhook requests within 4 seconds: "$method|$url|$bodyContent" -> timestamp
-    private val recentWebhookCache = java.util.Collections.synchronizedMap(
-        object : LinkedHashMap<String, Long>(64, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
-                return size > 150
-            }
+    // In-memory cache to prevent duplicate Webhook requests within 6 seconds: "$method|$url|$bodyContent" -> timestamp
+    private val recentWebhookCache = object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
+            return size > 150
         }
-    )
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -47,19 +46,27 @@ object WebhookDispatcher {
             return@withContext WebhookResult(false, errorMessage = "Webhook URL is empty")
         }
 
-        // Deduplication check: suppress identical webhook within 4 seconds
+        // Atomic deduplication check: suppress identical webhook within 6 seconds
         val dedupeKey = "$method|$cleanUrl|${bodyContent.trim()}"
-        val now = System.currentTimeMillis()
-        val lastSent = recentWebhookCache[dedupeKey] ?: 0L
-        if (now - lastSent < 4000L) {
-            Log.w(TAG, "Suppressed duplicate Webhook within 4s to $cleanUrl")
+        val isDuplicate = synchronized(recentWebhookCache) {
+            val now = System.currentTimeMillis()
+            val lastSent = recentWebhookCache[dedupeKey] ?: 0L
+            if (now - lastSent < 6000L) {
+                true
+            } else {
+                recentWebhookCache[dedupeKey] = now
+                false
+            }
+        }
+        if (isDuplicate) {
+            Log.w(TAG, "Suppressed duplicate Webhook within 6s to $cleanUrl")
             return@withContext WebhookResult(
                 isSuccess = true,
                 statusCode = 200,
-                responseBody = "Suppressed duplicate webhook transmission within 4s"
+                responseBody = "Suppressed duplicate webhook transmission within 6s",
+                isDuplicateSuppressed = true
             )
         }
-        recentWebhookCache[dedupeKey] = now
 
         try {
             val requestBuilder = Request.Builder().url(url.trim())
