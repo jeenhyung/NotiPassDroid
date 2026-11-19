@@ -45,9 +45,9 @@ class NotificationPassService : NotificationListenerService() {
 
         // Cache to deduplicate rapid duplicate notifications (KakaoTalk group summary / micro-updates)
         private val recentNotificationCache = java.util.Collections.synchronizedMap(
-            object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+            object : LinkedHashMap<String, Long>(128, 0.75f, true) {
                 override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
-                    return size > 250
+                    return size > 500
                 }
             }
         )
@@ -347,15 +347,36 @@ class NotificationPassService : NotificationListenerService() {
             return
         }
 
-        // 3. De-duplicate identical notifications arriving in rapid bursts (within 2.5 seconds)
-        val dedupeKey = "$pkgName|$title|$text|$subText"
+        val cleanTitle = title.trim()
+        val cleanText = text.trim()
+        val cleanSubText = subText.trim()
         val now = System.currentTimeMillis()
-        val lastSeen = recentNotificationCache[dedupeKey] ?: 0L
-        if (now - lastSeen < 2500L) {
-            Log.d(TAG, "Ignored duplicate notification within 2.5s: $dedupeKey")
+
+        // 3. Multi-level De-duplication for Android micro-updates (within 3.5 seconds)
+        val exactKey = "$pkgName|$cleanTitle|$cleanText|$cleanSubText"
+        val contentKey = "$pkgName|$cleanTitle|$cleanText"
+        val postTimeKey = if (sbn.postTime > 0) "$pkgName|postTime:${sbn.postTime}" else ""
+        val sbnKey = sbn.key?.let { "key:$it" } ?: ""
+
+        val isDuplicate = (recentNotificationCache[exactKey]?.let { now - it < 3500L } == true) ||
+                (cleanText.isNotEmpty() && recentNotificationCache[contentKey]?.let { now - it < 3000L } == true) ||
+                (postTimeKey.isNotEmpty() && cleanText.isNotEmpty() && recentNotificationCache[postTimeKey]?.let { now - it < 3000L } == true)
+
+        if (isDuplicate) {
+            Log.d(TAG, "Ignored duplicate notification within 3.5s: pkg=$pkgName, title=$cleanTitle, text=$cleanText")
             return
         }
-        recentNotificationCache[dedupeKey] = now
+
+        recentNotificationCache[exactKey] = now
+        if (cleanText.isNotEmpty()) {
+            recentNotificationCache[contentKey] = now
+        }
+        if (postTimeKey.isNotEmpty()) {
+            recentNotificationCache[postTimeKey] = now
+        }
+        if (sbnKey.isNotEmpty()) {
+            recentNotificationCache[sbnKey] = now
+        }
 
         // Try to resolve contact phone number if title matches a contact name in phonebook
         val senderPhone = ContactUtil.getPhoneNumberByName(applicationContext, title)
@@ -382,7 +403,10 @@ class NotificationPassService : NotificationListenerService() {
         serviceScope.launch {
             // Check App Collector
             if (cachedCollectorPackages.contains(pkgName)) {
-                handleAppCollectorNotification(sbn, pkgName, title, text, subText)
+                val intercepted = handleAppCollectorNotification(sbn, pkgName, title, text, subText)
+                if (intercepted) {
+                    return@launch
+                }
             }
 
             if (pkgName == "com.kakao.talk") {
@@ -508,8 +532,8 @@ class NotificationPassService : NotificationListenerService() {
                 KakaoSummaryEngine.executeSummary(applicationContext, matchedConfig, isManual = false)
             }
 
-            // Return true if notification was dismissed to suppress further general rule matching
-            matchedConfig.dismissNotification
+            // Return true: handled by KakaoTalk summary room, suppress general automation rule
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Error in handleKakaoMessage", e)
             false

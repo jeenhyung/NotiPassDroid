@@ -16,6 +16,15 @@ object SmsDispatcher {
 
     private const val TAG = "SmsDispatcher"
 
+    // In-memory cache to prevent duplicate SMS transmissions within 4 seconds: "$cleanNumber|$trimmedMessage" -> timestamp
+    private val recentSmsCache = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
+                return size > 150
+            }
+        }
+    )
+
     suspend fun send(
         context: Context,
         destinationAddress: String,
@@ -25,9 +34,20 @@ object SmsDispatcher {
         if (cleanNumber.isBlank()) {
             return@withContext SmsResult(false, "수신 전화번호가 비어있습니다.")
         }
-        if (message.isBlank()) {
+        val trimmedMessage = message.trim()
+        if (trimmedMessage.isBlank()) {
             return@withContext SmsResult(false, "발송할 메시지 내용이 비어있습니다.")
         }
+
+        // Deduplication check: suppress identical SMS to same number within 4 seconds
+        val dedupeKey = "$cleanNumber|$trimmedMessage"
+        val now = System.currentTimeMillis()
+        val lastSent = recentSmsCache[dedupeKey] ?: 0L
+        if (now - lastSent < 4000L) {
+            Log.w(TAG, "Suppressed duplicate SMS within 4s to $cleanNumber: ${trimmedMessage.take(30)}...")
+            return@withContext SmsResult(isSuccess = true)
+        }
+        recentSmsCache[dedupeKey] = now
 
         try {
             val smsManager: SmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

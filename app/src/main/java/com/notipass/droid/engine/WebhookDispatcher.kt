@@ -1,5 +1,6 @@
 package com.notipass.droid.engine
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -18,6 +19,17 @@ data class WebhookResult(
 
 object WebhookDispatcher {
 
+    private const val TAG = "WebhookDispatcher"
+
+    // In-memory cache to prevent duplicate Webhook requests within 4 seconds: "$method|$url|$bodyContent" -> timestamp
+    private val recentWebhookCache = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
+                return size > 150
+            }
+        }
+    )
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -30,9 +42,24 @@ object WebhookDispatcher {
         headersJson: String = "{}",
         bodyContent: String = ""
     ): WebhookResult = withContext(Dispatchers.IO) {
-        if (url.isBlank()) {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isBlank()) {
             return@withContext WebhookResult(false, errorMessage = "Webhook URL is empty")
         }
+
+        // Deduplication check: suppress identical webhook within 4 seconds
+        val dedupeKey = "$method|$cleanUrl|${bodyContent.trim()}"
+        val now = System.currentTimeMillis()
+        val lastSent = recentWebhookCache[dedupeKey] ?: 0L
+        if (now - lastSent < 4000L) {
+            Log.w(TAG, "Suppressed duplicate Webhook within 4s to $cleanUrl")
+            return@withContext WebhookResult(
+                isSuccess = true,
+                statusCode = 200,
+                responseBody = "Suppressed duplicate webhook transmission within 4s"
+            )
+        }
+        recentWebhookCache[dedupeKey] = now
 
         try {
             val requestBuilder = Request.Builder().url(url.trim())

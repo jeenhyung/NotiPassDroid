@@ -27,13 +27,23 @@ object KakaoSummaryEngine {
     private const val CHANNEL_ID = "kakao_summary_channel"
     private const val CHANNEL_NAME = "카카오톡 AI 단톡방 요약"
 
+    // Guard against concurrent execution of summary for the same room (e.g. rapid threshold triggers)
+    private val runningSummaryRooms = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     suspend fun executeSummary(
         context: Context,
         config: KakaoSummaryConfig,
         isManual: Boolean = false
     ): GeminiResult = withContext(Dispatchers.IO) {
         val roomName = config.roomName
-        val rawLogs = KakaoLogStorage.readLogs(context, roomName)
+
+        if (!runningSummaryRooms.add(roomName)) {
+            Log.w(TAG, "Summary already in progress for room '$roomName'. Ignoring concurrent duplicate request.")
+            return@withContext GeminiResult(false, errorMessage = "이미 요약이 진행 중입니다.")
+        }
+
+        try {
+            val rawLogs = KakaoLogStorage.readLogs(context, roomName)
         val messageCount = KakaoLogStorage.getMessageCount(context, roomName)
 
         if (rawLogs.isBlank() || messageCount == 0) {
@@ -148,6 +158,9 @@ object KakaoSummaryEngine {
             db.logDao().insertLog(logEntry)
 
             result
+        }
+        } finally {
+            runningSummaryRooms.remove(roomName)
         }
     }
 

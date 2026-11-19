@@ -28,12 +28,21 @@ object AppSummaryEngine {
     private const val CHANNEL_ID = "channel_app_summary"
     private const val CHANNEL_NAME = "앱 알림 AI 요약"
 
+    // Guard against concurrent execution of summary for the same package
+    private val runningSummaryPackages = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     suspend fun executeSummary(
         context: Context,
         config: AppCollectorConfig,
         isManual: Boolean = false
     ): GeminiResult = withContext(Dispatchers.IO) {
-        val db = AppDatabase.getDatabase(context)
+        if (!runningSummaryPackages.add(config.packageName)) {
+            Log.w(TAG, "Summary already in progress for package '${config.packageName}'. Ignoring concurrent duplicate request.")
+            return@withContext GeminiResult(false, errorMessage = "이미 요약이 진행 중입니다.")
+        }
+
+        try {
+            val db = AppDatabase.getDatabase(context)
         val notifications = db.appCollectorDao().getNotificationsListForPackage(config.packageName)
         val count = notifications.size
 
@@ -150,6 +159,9 @@ object AppSummaryEngine {
             db.logDao().insertLog(logEntry)
 
             result
+        }
+        } finally {
+            runningSummaryPackages.remove(config.packageName)
         }
     }
 
