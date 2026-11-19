@@ -1,9 +1,11 @@
 package com.notipass.droid.ui.screens
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -33,6 +35,8 @@ import com.notipass.droid.data.db.AppDatabase
 import com.notipass.droid.data.preference.AppPreferences
 import com.notipass.droid.engine.AppSummaryEngine
 import com.notipass.droid.engine.AppSummaryScheduler
+import com.notipass.droid.engine.GeminiSummarizer
+import com.notipass.droid.engine.GeminiTestResult
 import com.notipass.droid.model.AppCollectorConfig
 import com.notipass.droid.model.AppSummaryRecord
 import com.notipass.droid.model.CollectedAppNotification
@@ -73,6 +77,9 @@ fun AppCollectorTabContent(
     var showSummaryHistoryForApp by remember { mutableStateOf<AppCollectorConfig?>(null) }
     var isRunningSummaryPackage by remember { mutableStateOf<String?>(null) }
     var summaryResultDialog by remember { mutableStateOf<String?>(null) }
+    var geminiApiKey by remember { mutableStateOf(AppPreferences.getGeminiApiKey(context)) }
+    var isTestingGemini by remember { mutableStateOf(false) }
+    var geminiTestResult by remember { mutableStateOf<GeminiTestResult?>(null) }
 
     // External trigger to open app picker (e.g. from FAB or TopBar action)
     LaunchedEffect(showAddAppTrigger) {
@@ -125,6 +132,108 @@ fun AppCollectorTabContent(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
+                }
+            }
+        }
+
+        // 1.5 Gemini API Key & Connection Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Gemini AI API 설정", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                        }
+                        if (geminiApiKey.isNotBlank()) {
+                            Surface(
+                                color = Color(0xFF2E7D32).copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(
+                                    "등록됨",
+                                    color = Color(0xFF2E7D32),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = geminiApiKey,
+                        onValueChange = {
+                            geminiApiKey = it
+                            AppPreferences.setGeminiApiKey(context, it)
+                        },
+                        label = { Text("Google Gemini API Key") },
+                        placeholder = { Text("AIzaSy...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        trailingIcon = {
+                            if (geminiApiKey.isNotBlank()) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF2E7D32))
+                            }
+                        }
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (geminiApiKey.isBlank()) {
+                                    Toast.makeText(context, "API 키를 먼저 입력해주세요.", Toast.LENGTH_SHORT).show()
+                                    return@FilledTonalButton
+                                }
+                                isTestingGemini = true
+                                coroutineScope.launch {
+                                    val res = GeminiSummarizer.testApiKey(geminiApiKey)
+                                    isTestingGemini = false
+                                    geminiTestResult = res
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isTestingGemini
+                        ) {
+                            if (isTestingGemini) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("연결 확인 중...", fontSize = 12.sp)
+                            } else {
+                                Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("연결 & 모델 테스트", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/app/apikey"))
+                                context.startActivity(intent)
+                            }
+                        ) {
+                            Text("무료 키 발급", fontSize = 12.sp)
+                        }
+                    }
                 }
             }
         }
@@ -217,7 +326,7 @@ fun AppCollectorTabContent(
                     onRunSummaryNow = {
                         val key = AppPreferences.getGeminiApiKey(context)
                         if (key.isBlank()) {
-                            Toast.makeText(context, "Gemini API 키를 먼저 등록해주세요. ('카카오톡 요약' 탭에서 등록 가능)", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Gemini API 키를 먼저 등록해주세요. (상단 'Gemini AI API 설정'에서 등록)", Toast.LENGTH_SHORT).show()
                             return@AppCollectorConfigCard
                         }
                         isRunningSummaryPackage = config.packageName
@@ -301,6 +410,69 @@ fun AppCollectorTabContent(
             config = config,
             db = db,
             onDismiss = { showSummaryHistoryForApp = null }
+        )
+    }
+
+    // Gemini API Connection Test Dialog
+    geminiTestResult?.let { res ->
+        AlertDialog(
+            onDismissRequest = { geminiTestResult = null },
+            icon = {
+                Icon(
+                    if (res.isSuccess) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    tint = if (res.isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(36.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = if (res.isSuccess) "Gemini 연결 성공!" else "Gemini 연결 실패",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    if (res.isSuccess) {
+                        Text("✅ 현재 API 키로 앱 알림 AI 요약이 정상 작동합니다.", fontWeight = FontWeight.Bold)
+                        Text(
+                            "• 선택된 최적 모델: ${res.selectedModel}",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text("• 테스트 응답: \"${res.sampleResponse}\"", fontSize = 13.sp)
+                        if (res.availableModels.isNotEmpty()) {
+                            Text(
+                                "• 지원 모델 목록 (${res.availableModels.size}개):",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp
+                            )
+                            res.availableModels.take(6).forEach { m ->
+                                Text("  - $m", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
+                    } else {
+                        Text(
+                            "구글 AI API 호출 중 오류가 발생했습니다:",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(res.errorMessage ?: "알 수 없는 오류", fontSize = 13.sp)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        Text("💡 해결 가이드:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("1. aistudio.google.com 에 접속하여 API 키를 다시 생성하거나 복사해보세요.", fontSize = 11.sp)
+                        Text("2. API 키에 앞뒤 공백이나 특수문자가 섞이지 않았는지 확인해주세요.", fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { geminiTestResult = null }) {
+                    Text("확인")
+                }
+            }
         )
     }
 

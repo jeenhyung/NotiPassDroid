@@ -36,12 +36,13 @@ object GeminiSummarizer {
     private var cachedWorkingModel: String? = null
 
     private val DEFAULT_CANDIDATE_MODELS = listOf(
-        "models/gemini-2.0-flash",
         "models/gemini-1.5-flash",
+        "models/gemini-2.0-flash",
+        "models/gemini-1.5-flash-latest",
         "models/gemini-1.5-flash-002",
         "models/gemini-1.5-flash-8b",
         "models/gemini-1.5-pro",
-        "models/gemini-2.5-flash"
+        "models/gemini-pro"
     )
 
     private val client = OkHttpClient.Builder()
@@ -49,6 +50,25 @@ object GeminiSummarizer {
         .readTimeout(35, TimeUnit.SECONDS)
         .writeTimeout(35, TimeUnit.SECONDS)
         .build()
+
+    private fun isApiKeyInvalid(text: String): Boolean {
+        return text.contains("API_KEY_INVALID", ignoreCase = true) ||
+               text.contains("API key not valid", ignoreCase = true)
+    }
+
+    fun sortModelsByPriority(models: List<String>): List<String> {
+        return models.sortedWith(compareBy { name ->
+            when {
+                name.contains("1.5-flash", ignoreCase = true) && !name.contains("8b", ignoreCase = true) -> 0
+                name.contains("2.0-flash", ignoreCase = true) -> 1
+                name.contains("2.5-flash", ignoreCase = true) -> 2
+                name.contains("flash", ignoreCase = true) -> 3
+                name.contains("1.5-pro", ignoreCase = true) || name.contains("2.0-pro", ignoreCase = true) -> 4
+                name.contains("pro", ignoreCase = true) -> 5
+                else -> 6
+            }
+        })
+    }
 
     /**
      * Query Google Generative Language API ModelService.ListModels to dynamically discover
@@ -60,7 +80,8 @@ object GeminiSummarizer {
             return@withContext Result.failure(IllegalArgumentException("Gemini API 키가 비어있습니다."))
         }
 
-        val versions = listOf("v1beta", "v1")
+        // Try v1 first for stable GA releases, then v1beta
+        val versions = listOf("v1", "v1beta")
         var lastErr = "모델 목록을 조회할 수 없습니다."
 
         for (version in versions) {
@@ -78,10 +99,11 @@ object GeminiSummarizer {
                         Log.w(TAG, "ListModels ($version) failed: HTTP ${response.code} - $body")
                         val parsed = parseError(body, response.code)
                         lastErr = parsed
-                        if (response.code == 400 || response.code == 403) {
-                            // Definitive key or permission error
+                        if (isApiKeyInvalid(body)) {
+                            // Definitive key error across all endpoints
                             return@withContext Result.failure(Exception(parsed))
                         }
+                        // Non-fatal for this version, try next version
                         return@use
                     }
 
@@ -125,25 +147,13 @@ object GeminiSummarizer {
      * Pick the optimal model based on speed, cost and performance.
      */
     fun selectBestModel(models: List<String>): String {
-        val priorityPredicates: List<(String) -> Boolean> = listOf(
-            { it.contains("2.0-flash", ignoreCase = true) || it.contains("2.5-flash", ignoreCase = true) },
-            { it.contains("1.5-flash", ignoreCase = true) && !it.contains("8b", ignoreCase = true) },
-            { it.contains("1.5-flash-8b", ignoreCase = true) },
-            { it.contains("flash", ignoreCase = true) },
-            { it.contains("1.5-pro", ignoreCase = true) || it.contains("2.0-pro", ignoreCase = true) },
-            { it.contains("pro", ignoreCase = true) }
-        )
-
-        for (predicate in priorityPredicates) {
-            val match = models.firstOrNull { predicate(it) }
-            if (match != null) return match
-        }
-
-        return models.firstOrNull() ?: "models/gemini-2.0-flash"
+        return sortModelsByPriority(models).firstOrNull() ?: "models/gemini-1.5-flash"
     }
 
     /**
      * Test the API key by querying available models and sending a tiny test prompt.
+     * Even if dynamic ListModels discovery fails, directly tries candidate models (v1 / v1beta)
+     * so that restricted or standard API keys work seamlessly.
      */
     suspend fun testApiKey(apiKey: String): GeminiTestResult = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim().removePrefix("Bearer ").trim()
@@ -151,38 +161,47 @@ object GeminiSummarizer {
             return@withContext GeminiTestResult(false, errorMessage = "API 키를 먼저 입력해주세요.")
         }
 
-        // 1. Discover available models
+        // 1. Try to discover available models dynamically (non-blocking fallback)
         val modelDiscoveryResult = fetchAvailableModels(cleanKey)
-        val availableModels = modelDiscoveryResult.getOrNull()
+        val discoveredModels = modelDiscoveryResult.getOrNull()
 
-        if (modelDiscoveryResult.isFailure || availableModels.isNullOrEmpty()) {
-            val err = modelDiscoveryResult.exceptionOrNull()?.message ?: "사용 가능한 Gemini 모델을 찾을 수 없습니다."
-            return@withContext GeminiTestResult(false, errorMessage = err)
-        }
-
-        val bestModel = selectBestModel(availableModels)
-        Log.i(TAG, "Testing API key with best model: $bestModel")
-
-        // 2. Test generation with short prompt
-        val testPrompt = "카카오톡 AI 요약 비서 연동 테스트입니다. '연결 성공'이라고 1단어로만 짧게 응답하세요."
-        val genResult = executeGenerateContent(cleanKey, bestModel, testPrompt, maxTokens = 50)
-
-        if (genResult.isSuccess && !genResult.summary.isNullOrBlank()) {
-            cachedWorkingModel = bestModel
-            GeminiTestResult(
-                isSuccess = true,
-                selectedModel = bestModel.removePrefix("models/"),
-                availableModels = availableModels.map { it.removePrefix("models/") },
-                sampleResponse = genResult.summary.trim()
-            )
+        val modelsToTry = if (!discoveredModels.isNullOrEmpty()) {
+            sortModelsByPriority(discoveredModels)
         } else {
-            GeminiTestResult(
-                isSuccess = false,
-                selectedModel = bestModel.removePrefix("models/"),
-                availableModels = availableModels.map { it.removePrefix("models/") },
-                errorMessage = genResult.errorMessage ?: "테스트 텍스트 생성에 실패했습니다."
-            )
+            DEFAULT_CANDIDATE_MODELS
         }
+
+        val testPrompt = "카카오톡 AI 요약 비서 연동 테스트입니다. '연결 성공'이라고 1단어로만 짧게 응답하세요."
+        var lastError: String? = null
+
+        // 2. Direct generation test across candidate models until one succeeds
+        for (model in modelsToTry) {
+            val genResult = executeGenerateContent(cleanKey, model, testPrompt, maxTokens = 50)
+            if (genResult.isSuccess && !genResult.summary.isNullOrBlank()) {
+                cachedWorkingModel = model
+                val displayModel = model.removePrefix("models/")
+                val displayList = if (!discoveredModels.isNullOrEmpty()) {
+                    discoveredModels.map { it.removePrefix("models/") }
+                } else {
+                    listOf(displayModel)
+                }
+                return@withContext GeminiTestResult(
+                    isSuccess = true,
+                    selectedModel = displayModel,
+                    availableModels = displayList,
+                    sampleResponse = genResult.summary.trim()
+                )
+            }
+            lastError = genResult.errorMessage ?: lastError
+            if (isApiKeyInvalid(lastError ?: "")) {
+                break
+            }
+        }
+
+        GeminiTestResult(
+            isSuccess = false,
+            errorMessage = lastError ?: modelDiscoveryResult.exceptionOrNull()?.message ?: "테스트 텍스트 생성에 실패했습니다."
+        )
     }
 
     /**
@@ -321,30 +340,15 @@ $sanitizedLogs
             if (result.isSuccess) {
                 return@withContext result
             }
-            Log.w(TAG, "Cached model $model failed, falling back to dynamic model search...")
+            Log.w(TAG, "Cached model $model failed, falling back to candidate model search...")
         }
 
-        // 2. Dynamically discover models supported by this API key
+        // 2. Dynamically discover models supported by this API key, fallback to DEFAULT_CANDIDATE_MODELS on any error
         val discoveryResult = fetchAvailableModels(cleanKey)
-        val modelsToTry = if (discoveryResult.isSuccess && !discoveryResult.getOrNull().isNullOrEmpty()) {
-            val list = discoveryResult.getOrNull()!!
-            val sorted = list.sortedWith(compareBy { name ->
-                when {
-                    name.contains("2.0-flash", ignoreCase = true) -> 0
-                    name.contains("2.5-flash", ignoreCase = true) -> 1
-                    name.contains("1.5-flash", ignoreCase = true) -> 2
-                    name.contains("flash", ignoreCase = true) -> 3
-                    name.contains("pro", ignoreCase = true) -> 4
-                    else -> 5
-                }
-            })
-            sorted
+        val discovered = discoveryResult.getOrNull()
+        val modelsToTry = if (!discovered.isNullOrEmpty()) {
+            sortModelsByPriority(discovered)
         } else {
-            // If discovery failed due to auth/permission, return error immediately
-            val exc = discoveryResult.exceptionOrNull()
-            if (exc != null && (exc.message?.contains("올바르지 않습니다") == true || exc.message?.contains("권한") == true)) {
-                return@withContext GeminiResult(false, errorMessage = exc.message)
-            }
             DEFAULT_CANDIDATE_MODELS
         }
 
@@ -358,9 +362,8 @@ $sanitizedLogs
                 return@withContext result
             }
             lastError = result.errorMessage ?: lastError
-            // If error is 400 (Bad request/key) or 403 (Forbidden), stop retrying
-            if (lastError.contains("API 키가 올바르지") || lastError.contains("권한 오류")) {
-                return@withContext GeminiResult(false, errorMessage = lastError)
+            if (isApiKeyInvalid(lastError)) {
+                return@withContext GeminiResult(false, errorMessage = "API 키가 올바르지 않습니다. Google AI Studio(aistudio.google.com)에서 발급받은 키를 다시 확인해주세요.")
             }
         }
 
@@ -448,31 +451,19 @@ $notificationsText
             }
         }
 
-        // Try cached model first
+        // 1. Try cached model first
         cachedWorkingModel?.let { model ->
             val result = executeGenerateContent(cleanKey, model, prompt, maxTokens)
             if (result.isSuccess) return@withContext result
+            Log.w(TAG, "Cached model $model failed, falling back to candidate model search...")
         }
 
-        // Dynamically discover models
+        // 2. Dynamically discover models supported by this API key, fallback to DEFAULT_CANDIDATE_MODELS on any error
         val discoveryResult = fetchAvailableModels(cleanKey)
-        val modelsToTry = if (discoveryResult.isSuccess && !discoveryResult.getOrNull().isNullOrEmpty()) {
-            val list = discoveryResult.getOrNull()!!
-            list.sortedWith(compareBy { name ->
-                when {
-                    name.contains("2.0-flash", ignoreCase = true) -> 0
-                    name.contains("2.5-flash", ignoreCase = true) -> 1
-                    name.contains("1.5-flash", ignoreCase = true) -> 2
-                    name.contains("flash", ignoreCase = true) -> 3
-                    name.contains("pro", ignoreCase = true) -> 4
-                    else -> 5
-                }
-            })
+        val discovered = discoveryResult.getOrNull()
+        val modelsToTry = if (!discovered.isNullOrEmpty()) {
+            sortModelsByPriority(discovered)
         } else {
-            val exc = discoveryResult.exceptionOrNull()
-            if (exc != null && (exc.message?.contains("올바르지 않습니다") == true || exc.message?.contains("권한") == true)) {
-                return@withContext GeminiResult(false, errorMessage = exc.message)
-            }
             DEFAULT_CANDIDATE_MODELS
         }
 
@@ -484,8 +475,8 @@ $notificationsText
                 return@withContext result
             }
             lastError = result.errorMessage ?: lastError
-            if (lastError.contains("API 키가 올바르지") || lastError.contains("권한 오류")) {
-                return@withContext GeminiResult(false, errorMessage = lastError)
+            if (isApiKeyInvalid(lastError)) {
+                return@withContext GeminiResult(false, errorMessage = "API 키가 올바르지 않습니다. Google AI Studio(aistudio.google.com)에서 발급받은 키를 다시 확인해주세요.")
             }
         }
 
@@ -514,6 +505,23 @@ $notificationsText
             }
             put("contents", contentsArray)
 
+            // Safety settings to prevent false-positive content blocks on Korean chat messages & notifications
+            val safetyArray = JSONArray().apply {
+                val categories = listOf(
+                    "HARM_CATEGORY_HARASSMENT",
+                    "HARM_CATEGORY_HATE_SPEECH",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "HARM_CATEGORY_DANGEROUS_CONTENT"
+                )
+                for (cat in categories) {
+                    put(JSONObject().apply {
+                        put("category", cat)
+                        put("threshold", "BLOCK_NONE")
+                    })
+                }
+            }
+            put("safetySettings", safetyArray)
+
             val genConfig = JSONObject().apply {
                 put("temperature", 0.2)
                 put("maxOutputTokens", maxTokens)
@@ -524,11 +532,20 @@ $notificationsText
         val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
         val requestBody = requestBodyJson.toString().toRequestBody(mediaType)
 
-        // Try v1beta first, then v1
-        val candidateUrls = listOf(
-            "https://generativelanguage.googleapis.com/v1beta/$safeModel:generateContent?key=$cleanKey",
-            "https://generativelanguage.googleapis.com/v1/$safeModel:generateContent?key=$cleanKey"
-        )
+        // For gemini-1.5 models, v1 is the stable GA endpoint (which fixed v1beta 404).
+        // For gemini-2.0 models, v1beta is the primary endpoint.
+        val is2xModel = safeModel.contains("2.0") || safeModel.contains("2.5")
+        val candidateUrls = if (is2xModel) {
+            listOf(
+                "https://generativelanguage.googleapis.com/v1beta/$safeModel:generateContent?key=$cleanKey",
+                "https://generativelanguage.googleapis.com/v1/$safeModel:generateContent?key=$cleanKey"
+            )
+        } else {
+            listOf(
+                "https://generativelanguage.googleapis.com/v1/$safeModel:generateContent?key=$cleanKey",
+                "https://generativelanguage.googleapis.com/v1beta/$safeModel:generateContent?key=$cleanKey"
+            )
+        }
 
         var lastError = "통신 오류"
 
@@ -545,13 +562,11 @@ $notificationsText
                     if (!response.isSuccessful) {
                         Log.w(TAG, "generateContent on $url failed (HTTP ${response.code}): $responseBodyStr")
                         lastError = parseError(responseBodyStr, response.code)
-                        if (response.code == 404) {
-                            // 404 indicates model or api version mismatch, try next URL or model
-                            return@use
-                        } else {
-                            // 400, 403, 429
-                            return GeminiResult(false, errorMessage = lastError)
+                        if (isApiKeyInvalid(responseBodyStr)) {
+                            return GeminiResult(false, errorMessage = "API 키가 올바르지 않습니다. Google AI Studio(aistudio.google.com)에서 발급받은 키를 다시 확인해주세요.")
                         }
+                        // Non-fatal for this URL, continue to next candidate URL
+                        return@use
                     }
 
                     val jsonResponse = JSONObject(responseBodyStr)
@@ -564,7 +579,7 @@ $notificationsText
                         if (parts != null && parts.length() > 0) {
                             val summaryText = parts.getJSONObject(0).optString("text", "").trim()
                             if (summaryText.isNotBlank()) {
-                                Log.i(TAG, "Successfully generated content using $safeModel ($maxTokens tokens limit)")
+                                Log.i(TAG, "Successfully generated content using $safeModel via $url ($maxTokens tokens limit)")
                                 return GeminiResult(true, summary = summaryText, usedModel = safeModel)
                             }
                         }
@@ -596,16 +611,30 @@ $notificationsText
             val error = json.optJSONObject("error")
             val status = error?.optString("status", "") ?: ""
             val message = error?.optString("message", "") ?: responseStr.take(180)
+            val details = error?.optJSONArray("details")
+            var detailReason = ""
+            if (details != null) {
+                for (i in 0 until details.length()) {
+                    val d = details.optJSONObject(i)
+                    val r = d?.optString("reason", "")
+                    if (!r.isNullOrBlank()) {
+                        detailReason = r
+                        break
+                    }
+                }
+            }
 
             when {
-                httpCode == 400 || status == "INVALID_ARGUMENT" || message.contains("API key not valid", ignoreCase = true) ->
-                    "API 키가 올바르지 않습니다 (HTTP 400). Google AI Studio(aistudio.google.com)에서 발급받은 키를 다시 확인해주세요."
-                httpCode == 403 || status == "PERMISSION_DENIED" || message.contains("permission", ignoreCase = true) ->
-                    "접근 권한 오류 (HTTP 403): API 키에 'Generative Language API' 접근 권한이 없거나 제한된 키입니다."
+                detailReason == "API_KEY_INVALID" || message.contains("API key not valid", ignoreCase = true) ->
+                    "API 키가 올바르지 않습니다. Google AI Studio(aistudio.google.com)에서 발급받은 키를 다시 확인해주세요."
+                httpCode == 403 || status == "PERMISSION_DENIED" || detailReason == "ACCESS_DENIED" || message.contains("permission", ignoreCase = true) ->
+                    "접근 권한 오류 (HTTP 403): API 키에 'Generative Language API' 접근 권한이 없거나 제한된 키입니다. ($message)"
                 httpCode == 429 || status == "RESOURCE_EXHAUSTED" || message.contains("quota", ignoreCase = true) ->
                     "할당량 초과 (HTTP 429): 무료 요청 한도에 도달했습니다. 잠시 후 다시 시도해주세요."
                 httpCode == 404 ->
-                    "모델을 찾을 수 없음 (HTTP 404): $message"
+                    "모델 또는 엔드포인트를 찾을 수 없음 (HTTP 404): $message"
+                httpCode == 400 ->
+                    "요청 형식 오류 (HTTP 400): $message"
                 else ->
                     "Gemini 오류 (HTTP $httpCode): $message"
             }
